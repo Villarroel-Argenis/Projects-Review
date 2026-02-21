@@ -1,358 +1,597 @@
-# Projects-Review
-Visualizador de Proyectos
+# FlowForge
 
-
-# FlowForge 🔥
-
-> Un motor de workflows moderno, extensible y durable para .NET 10
-
-[![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/yourusername/FlowForge)
-
-## 📋 Descripción
-
-**FlowForge** es un motor de workflows liviano, extensible y de alto rendimiento diseñado para aplicaciones .NET modernas. Permite definir, ejecutar y gestionar workflows complejos con soporte para:
-
-- ✅ **Ejecución asíncrona** con suspensión/reanudación mediante bookmarks
-- ✅ **Control de flujo avanzado** (loops, condicionales, iteraciones)
-- ✅ **Gestión de estado** con persistencia de instancias
-- ✅ **Arquitectura extensible** basada en actividades reutilizables
-- ✅ **Workers durables** para procesamiento en background
-- ✅ **Stack-based execution** para bloques anidados (foreach, while, if)
-
-## 🚀 Características Principales
-
-### Motor de Workflows
-- **WorkflowEngine**: Motor principal de ejecución
-- **WorkflowInstance**: Instancia de workflow con estado persistible
-- **WorkflowDefinition**: Definición declarativa de workflows
-- **ActivityPipeline**: Pipeline de middleware para actividades
-
-### Actividades Disponibles
-
-#### Control de Flujo
-- **`IfActivity`**: Ejecución condicional con ramas true/false
-- **`WhileActivity`**: Bucle con condición evaluable
-- **`ForEachActivity`**: Iteración sobre colecciones (strings, números, objetos)
-
-#### Utilidades
-- **`DelayActivity`**: Pausa el workflow por un tiempo determinado
-- **`SetVariableActivity`**: Establece variables en el contexto
-- **`IncrementVariableActivity`**: Incrementa contadores numéricos
-- **`WriteLineActivity`**: Salida a consola (debugging)
-
-### Runtime
-- **`WorkflowWorker`**: Worker durable que procesa workflows en background
-- **`InMemoryWorkflowInstanceStore`**: Almacenamiento de instancias en memoria
-- **`WorkflowBookmark`**: Sistema de bookmarks para suspensión/reanudación
-
-## 📦 Instalación
-
-```bash
-# Clonar el repositorio
-git clone https://github.com/yourusername/FlowForge.git
-cd FlowForge
-
-# Restaurar dependencias
-dotnet restore
-
-# Compilar
-dotnet build
-
-# Ejecutar pruebas
-dotnet test
-```
-
-## 💻 Uso
-
-### Ejemplo Básico: Workflow con Loop
-
-```csharp
-using FlowForge.Core;
-using FlowForge.Runtime;
-using FlowForge.Activities;
-using FlowForge.Activities.ControlFlow;
-
-// 1. Crear almacenamiento de instancias
-var store = new InMemoryWorkflowInstanceStore();
-
-// 2. Crear pipeline y motor
-var pipeline = new ActivityPipeline([]);
-var engine = new WorkflowEngine(
-    nextStrategy: new DefaultNextStrategy(),
-    pipeline: pipeline
-);
-
-// 3. Definir actividades
-var incrementActivity = new IncrementVariableActivity(
-    id: "increment_counter",
-    variableName: "counter",
-    amount: 1,
-    returnToScope: true
-);
-
-var writeLineActivity = new WriteLineActivity(
-    id: "write_line",
-    messageFunc: ctx => $"Contador: {ctx.Get<int?>("counter") ?? 0}",
-    nextActivityId: "write_end"
-);
-
-var whileActivity = new WhileActivity(
-    id: "loop_start",
-    condition: ctx => (ctx.Get<int?>("counter") ?? 0) < 5,
-    bodyStartId: "increment_counter",
-    nextActivityId: "write_line"
-);
-
-var endActivity = new WriteLineActivity(
-    id: "write_end",
-    message: "Workflow completado!",
-    nextActivityId: null
-);
-
-// 4. Crear definición del workflow
-var definition = new WorkflowDefinition(
-    id: "loop_demo_workflow",
-    activities: [incrementActivity, writeLineActivity, whileActivity, endActivity],
-    startActivityId: "loop_start"
-);
-
-// 5. Crear instancia
-var instance = WorkflowInstance.Create(definition.Id);
-instance.CurrentActivityId = definition.StartActivityId;
-await store.SaveAsync(instance, CancellationToken.None);
-
-// 6. Ejecutar con worker
-var worker = new WorkflowWorker(engine, definition, store);
-using var cts = new CancellationTokenSource();
-_ = worker.RunAsync(cts.Token);
-
-Console.WriteLine("Presiona Ctrl+C para salir...");
-Console.CancelKeyPress += (s, e) => cts.Cancel();
-await Task.Delay(-1, cts.Token);
-```
-
-**Salida:**
-```
-Contador: 1
-Contador: 2
-Contador: 3
-Contador: 4
-Contador: 5
-Workflow completado!
-```
-
-### Ejemplo: ForEach con Objetos Complejos
-
-```csharp
-var users = new[]
-{
-    new { Name = "Alice", Age = 30 },
-    new { Name = "Bob", Age = 25 },
-    new { Name = "Charlie", Age = 35 }
-};
-
-var foreachActivity = new ForEachActivity(
-    id: "foreach_users",
-    collectionFunc: ctx => users,
-    itemVariableName: "currentUser",
-    bodyStartId: "process_user",
-    nextActivityId: "done"
-);
-
-var processActivity = new WriteLineActivity(
-    id: "process_user",
-    messageFunc: ctx => {
-        var user = ctx.Get<dynamic>("currentUser");
-        return $"Procesando usuario: {user.Name}, edad: {user.Age}";
-    },
-    nextActivityId: null // returnToScope
-);
-
-var definition = new WorkflowDefinition(
-    id: "users_workflow",
-    activities: [foreachActivity, processActivity],
-    startActivityId: "foreach_users"
-);
-```
-
-### Ejemplo: Delay Activity (Workflow Suspendido)
-
-```csharp
-var delayActivity = new DelayActivity(
-    id: "wait_5_seconds",
-    delay: TimeSpan.FromSeconds(5),
-    nextActivityId: "continue"
-);
-
-var continueActivity = new WriteLineActivity(
-    id: "continue",
-    message: "5 segundos después...",
-    nextActivityId: null
-);
-
-var definition = new WorkflowDefinition(
-    id: "delay_workflow",
-    activities: [delayActivity, continueActivity],
-    startActivityId: "wait_5_seconds"
-);
-
-// El WorkflowWorker detectará automáticamente los timers vencidos
-// y reanudará el workflow cuando corresponda
-```
-
-## 🏗️ Arquitectura
-
-### Componentes Principales
-
-```
-FlowForge/
-├── src/
-│   ├── FlowForge.Core/              # Motor central y modelos
-│   │   ├── Engine/
-│   │   │   └── WorkflowEngine.cs
-│   │   ├── Models/
-│   │   │   ├── WorkflowDefinition.cs
-│   │   │   ├── WorkflowInstance.cs
-│   │   │   ├── ActivityResult.cs
-│   │   │   └── WorkflowBookmark.cs
-│   │   ├── Context/
-│   │   │   └── ActivityExecutionContext.cs
-│   │   └── Abstractions/
-│   │       └── IActivity.cs
-│   │
-│   ├── FlowForge.Runtime/           # Runtime y workers
-│   │   ├── WorkflowWorker.cs
-│   │   ├── WorkflowRuntimeEngine.cs
-│   │   └── InMemoryWorkflowInstanceStore.cs
-│   │
-│   ├── FlowForge.Activities/        # Actividades base
-│   │   ├── DelayActivity.cs
-│   │   ├── SetVariableActivity.cs
-│   │   ├── IncrementVariableActivity.cs
-│   │   ├── WriteLineActivity.cs
-│   │   ├── WhileActivity.cs
-│   │   └── ForEachActivity.cs
-│   │
-│   └── FlowForge.Activities.ControlFlow/  # Control de flujo
-│       └── IfActivity.cs
-│
-└── Tests/
-    └── FlowForge.Tests/             # Pruebas unitarias (xUnit + Shouldly)
-        └── Core/
-            └── WorkflowEngineTests.cs
-```
-
-### Flujo de Ejecución
-
-1. **Definición**: Se crea un `WorkflowDefinition` con actividades
-2. **Instancia**: Se crea un `WorkflowInstance` desde la definición
-3. **Ejecución**: El `WorkflowEngine` ejecuta actividades secuencialmente
-4. **Stack Management**: Bloques como `ForEach` y `While` usan el `ExecutionStack`
-5. **Suspensión**: `DelayActivity` crea un `WorkflowBookmark` para pausar
-6. **Reanudación**: El `WorkflowWorker` detecta timers vencidos y reanuda
-
-### Estados del Workflow
-
-```csharp
-public enum WorkflowStatus
-{
-    Running,      // En ejecución activa
-    Suspended,    // Suspendido (esperando timer o señal)
-    Completed     // Finalizado
-}
-```
-
-## 🧪 Testing
-
-El proyecto incluye una suite completa de pruebas unitarias con **xUnit** y **Shouldly**:
-
-```bash
-dotnet test --verbosity normal
-```
-
-**Cobertura actual: 11 pruebas**
-- ✅ WorkflowDefinition
-- ✅ DelayActivity
-- ✅ ForEachActivity (strings, números, objetos complejos, colección vacía)
-- ✅ IncrementVariableActivity (casos múltiples)
-
-## 🗺️ Roadmap
-
-### ✅ Completado (v0.1)
-
-- [x] Core workflow engine
-- [x] Actividades básicas (Delay, SetVariable, WriteLine)
-- [x] Control de flujo (If, While, ForEach)
-- [x] Sistema de bookmarks para suspensión
-- [x] WorkflowWorker para ejecución durable
-- [x] InMemoryWorkflowInstanceStore
-- [x] Suite de pruebas unitarias
-
-### 🚧 En Progreso (v0.2)
-
-- [X] Persistencia a base de datos (Entity Framework Core)
-- [X] Logging y telemetría (OpenTelemetry)
-- [ ] Middleware pipeline para actividades
-- [ ] Validación de workflows
-
-### 📅 Próximos Pasos (v0.3+)
-
-#### Nuevas Actividades
-- [ ] `ParallelActivity`: Ejecución paralela de ramas
-- [ ] `SwitchActivity`: Switch/case para múltiples condiciones
-- [ ] `TryCatchActivity`: Manejo de excepciones
-- [ ] `HttpRequestActivity`: Llamadas HTTP
-- [ ] `SendSignalActivity` / `WaitForSignalActivity`: Event-driven workflows
-
-#### Características Avanzadas
-- [ ] Event Bus para señales externas
-- [ ] Compensación y transacciones (Saga pattern)
-- [ ] Versionado de workflows
-- [ ] Workflow designer visual (Blazor)
-- [ ] Dashboard de monitoreo
-- [ ] Métricas y observabilidad
-- [ ] Distributed tracing
-
-#### Infraestructura
-- [ ] Soporte para DI (Dependency Injection)
-- [ ] Plugins y extensibilidad
-- [ ] Azure Durable Functions compatibility layer
-- [ ] Kubernetes operators
-- [ ] CLI para gestión de workflows
-
-## 🤝 Contribuir
-
-¡Las contribuciones son bienvenidas! Por favor:
-
-1. Fork el proyecto
-2. Crea una rama para tu feature (`git checkout -b feature/AmazingFeature`)
-3. Commit tus cambios (`git commit -m 'Add some AmazingFeature'`)
-4. Push a la rama (`git push origin feature/AmazingFeature`)
-5. Abre un Pull Request
-
-### Guías de Contribución
-
-- Seguir las convenciones de código C# (.editorconfig incluido)
-- Agregar pruebas unitarias para nuevas funcionalidades
-- Actualizar la documentación según sea necesario
-- Los commits deben seguir [Conventional Commits](https://www.conventionalcommits.org/)
-
-## 📄 Licencia
-
-Este proyecto está bajo la licencia MIT. Ver el archivo [LICENSE](LICENSE) para más detalles.
-
-## 👨‍💻 Autor
-
-**Tu Nombre** - [@yourusername](https://github.com/yourusername)
-
-## 🙏 Agradecimientos
-
-- Inspirado por [Azure Durable Functions](https://learn.microsoft.com/en-us/azure/azure-functions/durable/)
-- Inspirado por [Temporal.io](https://temporal.io/)
-- Built with ❤️ using .NET 10
+Motor de ejecución de workflows para .NET 10, diseñado con énfasis en corrección estructural, rendimiento en runtime y extensibilidad progresiva.
 
 ---
 
-⭐ Si este proyecto te resulta útil, considera darle una estrella en GitHub!
+## Tabla de contenidos
+
+- [Estructura del proyecto](#estructura-del-proyecto)
+- [Conceptos clave](#conceptos-clave)
+- [Uso rápido](#uso-rápido)
+- [Definir actividades](#definir-actividades)
+- [Construir un workflow](#construir-un-workflow)
+- [Validación](#validación)
+- [Ejecución](#ejecución)
+- [Protección contra ciclos](#protección-contra-ciclos)
+- [Arquitectura interna](#arquitectura-interna)
+- [Integración con Dependency Injection](#integración-con-dependency-injection)
+- [Sandbox — Demo interactivo](#sandbox--demo-interactivo)
+- [Tests](#tests)
+- [Roadmap](#roadmap)
+
+---
+
+## Estructura del proyecto
+
+```
+FlowForge/
+├── FlowForge.Core/                 # Biblioteca principal — sin dependencias externas de negocio
+│   ├── Abstractions/
+│   │   ├── IActivity.cs            # Contrato de actividad ejecutable
+│   │   └── IWorkflowEngine.cs      # Contrato público del motor de ejecución
+│   ├── Builders/
+│   │   └── WorkflowBuilder.cs      # Fluent API para definir workflows
+│   ├── Exceptions/
+│   │   └── WorkflowDefinitionException.cs
+│   ├── Execution/
+│   │   ├── WorkflowEngine.cs       # Implementación del motor
+│   │   ├── WorkflowExecutionContext.cs
+│   │   └── WorkflowExecutionOptions.cs
+│   ├── Models/
+│   │   ├── ActivityConnection.cs
+│   │   ├── ActivityExecutionResult.cs
+│   │   ├── ActivityOutcomes.cs     # Constantes Done / Failed
+│   │   ├── ParallelGroup.cs        # Metadata de un grupo fork/join
+│   │   ├── TerminationReason.cs
+│   │   ├── WorkflowCheckpoint.cs   # Snapshot de instancia suspendida
+│   │   ├── WorkflowDefinition.cs   # Grafo compilado e inmutable
+│   │   └── WorkflowExecutionResult.cs
+│   ├── Persistence/
+│   │   ├── IWorkflowCheckpointStore.cs       # Contrato de persistencia
+│   │   └── InMemoryWorkflowCheckpointStore.cs # Implementación en memoria
+│   └── Validation/
+│       ├── ValidationErrorCode.cs
+│       ├── ValidationSeverity.cs
+│       ├── WorkflowValidationError.cs
+│       ├── WorkflowValidationResult.cs
+│       └── WorkflowValidator.cs    # internal — detalle del builder
+│
+├── FlowForge.Extensions.DependencyInjection/   # Integración con el ecosistema .NET DI
+│   └── FlowForgeServiceCollectionExtensions.cs # AddFlowForge() / AddFlowForge(options =>)
+│
+├── FlowForge.Sandbox/              # Demo interactivo — aprobación de préstamo
+│   ├── Program.cs                  # Flujo completo: ejecutar → suspender → decisión humana → reanudar
+│   ├── Activities/
+│   │   └── WriteLineActivity.cs
+│   └── Usings/
+│       └── GlobalUsings.cs
+│
+└── FlowForge.Core.Tests/           # Proyecto de tests
+    ├── Architecture/               # Reglas estructurales con NetArchTest
+    ├── Builders/                   # Tests del builder y validador
+    ├── DependencyInjection/        # Tests de AddFlowForge
+    ├── Executions/                 # Tests del engine, middleware y ejecución paralela
+    ├── Helpers/                    # Dobles de prueba reutilizables
+    └── Models/                    # Tests de WorkflowDefinition y resultados
+```
+
+---
+
+## Conceptos clave
+
+| Concepto | Descripción |
+|---|---|
+| `IActivity` | Unidad de trabajo. Implementa `ExecuteAsync` y retorna un `ActivityExecutionResult` con un *outcome* string. |
+| `WorkflowBuilder` | Fluent API que construye el grafo. Llama a `Build()` para obtener la definición compilada. |
+| `WorkflowDefinition` | Grafo inmutable con índices O(1) preconstruidos. Solo el builder puede instanciarla. |
+| `IWorkflowEngine` | Contrato del motor. La implementación concreta es `WorkflowEngine`. |
+| *Outcome* | String que retorna una actividad para determinar qué conexión seguir. Las constantes predefinidas son `ActivityOutcomes.Done` y `ActivityOutcomes.Failed`. |
+
+---
+
+## Uso rápido
+
+```csharp
+// 1. Definir actividades
+sealed class EnviarEmailActivity : IActivity
+{
+    public string Id   { get; init; } = Guid.NewGuid().ToString();
+    public string Name { get; init; } = "Enviar Email";
+
+    public async Task<ActivityExecutionResult> ExecuteAsync(
+        WorkflowExecutionContext context,
+        CancellationToken cancellationToken = default)
+    {
+        var destinatario = context.GetVariable<string>("destinatario");
+        await emailService.SendAsync(destinatario!, cancellationToken);
+        return ActivityExecutionResult.Success();
+    }
+}
+
+// 2. Construir el workflow
+var workflow = new WorkflowBuilder()
+    .WithName("Proceso de Bienvenida")
+    .StartWith(new ValidarUsuarioActivity())
+    .Then(new EnviarEmailActivity())
+    .Then(new RegistrarAuditoriaActivity())
+    .Build();
+
+// 3. Ejecutar
+IWorkflowEngine engine = new WorkflowEngine(logger);
+
+var context = new WorkflowExecutionContext();
+context.SetVariable("destinatario", "usuario@ejemplo.com");
+
+var result = await engine.ExecuteAsync(workflow, context);
+
+if (result.IsSuccess)
+    Console.WriteLine($"Completado en {result.Duration.TotalMilliseconds:F0}ms");
+else
+    Console.WriteLine($"Falló: {result.ErrorMessage} ({result.TerminationReason})");
+```
+
+---
+
+## Definir actividades
+
+Implementa `IActivity`. Los campos `Id` y `Name` son **init-only** — se asignan en la construcción y no pueden mutarse después, garantizando que los índices del grafo nunca queden desincronizados.
+
+```csharp
+public sealed class ProcesarPagoActivity : IActivity
+{
+    public string Id   { get; init; } = Guid.NewGuid().ToString();
+    public string Name { get; init; } = "Procesar Pago";
+
+    public async Task<ActivityExecutionResult> ExecuteAsync(
+        WorkflowExecutionContext context,
+        CancellationToken cancellationToken = default)
+    {
+        var monto = context.GetVariable<decimal>("monto");
+
+        var aprobado = await pagoService.ProcesarAsync(monto, cancellationToken);
+
+        // El outcome determina qué rama seguirá el engine
+        return aprobado
+            ? ActivityExecutionResult.Success("Approved")
+            : ActivityExecutionResult.Success("Rejected");
+    }
+}
+```
+
+---
+
+## Construir un workflow
+
+### Flujo lineal
+
+```csharp
+var workflow = new WorkflowBuilder()
+    .WithName("Flujo Lineal")
+    .StartWith(new PasoA())
+    .Then(new PasoB())
+    .Then(new PasoC())
+    .Build();
+```
+
+### Flujo condicional (múltiples outcomes)
+
+```csharp
+var validar  = new ValidarPedidoActivity();
+var aprobar  = new AprobarPedidoActivity();
+var rechazar = new RechazarPedidoActivity();
+var notificar = new NotificarActivity();
+
+var workflow = new WorkflowBuilder()
+    .WithName("Aprobación de Pedido")
+    .StartWith(validar)
+    .Then(aprobar,  "Approved")   // validar → aprobar  [Approved]
+    .Then(rechazar, "Rejected")   // validar → rechazar  [Rejected]
+    .Then(notificar)              // aprobar → notificar [Done]
+    .Connect(rechazar.Id, notificar.Id)  // rechazar → notificar [Done]
+    .Build();
+```
+
+### `Connect` — conexiones manuales
+
+Cuando la API fluida no es suficiente para expresar el grafo, usa `Connect` para declarar conexiones arbitrarias:
+
+```csharp
+builder.Connect(sourceId, targetId, outcome: "Retry");
+```
+
+---
+
+## Validación
+
+`Build()` valida el grafo antes de compilar los índices. Los **errores** bloquean la compilación; las **advertencias** no.
+
+```csharp
+// Opción A — validar antes de Build para obtener feedback detallado
+var validation = builder.Validate();
+
+foreach (var error in validation.Errors)
+    Console.WriteLine($"[{error.Severity}] {error.Code}: {error.Message}");
+
+// Opción B — Build lanza WorkflowDefinitionException si hay errores
+try
+{
+    var workflow = builder.Build();
+}
+catch (WorkflowDefinitionException ex)
+{
+    foreach (var error in ex.ValidationResult.Errors)
+        logger.LogError("{Code}: {Message}", error.Code, error.Message);
+}
+```
+
+### Códigos de validación
+
+| Código | Severidad | Descripción |
+|---|---|---|
+| `NoActivities` | Error | El workflow no tiene actividades. |
+| `NoStartActivity` | Error | No se llamó a `StartWith()`. |
+| `StartActivityNotFound` | Error | El ID de inicio no existe en el grafo. |
+| `DuplicateActivityId` | Error | Dos actividades comparten el mismo `Id`. |
+| `DuplicateConnection` | Error | Mismo `(source, outcome)` con dos destinos. |
+| `ConnectionSourceNotFound` | Error | `sourceId` de una conexión no existe. |
+| `ConnectionTargetNotFound` | Error | `targetId` de una conexión no existe. |
+| `MissingWorkflowName` | Warning | No se llamó a `WithName()`. |
+| `UnreachableActivity` | Warning | Actividad registrada pero nunca alcanzable. |
+| `CycleDetected` | Warning | Ciclo dirigido detectado. Válido, pero requiere condición de salida. |
+
+---
+
+## Ejecución
+
+### `TerminationReason` — por qué terminó el workflow
+
+```csharp
+var result = await engine.ExecuteAsync(workflow, context, options, cancellationToken);
+
+switch (result.TerminationReason)
+{
+    case TerminationReason.Completed:
+        // Fin normal: el grafo llegó a un nodo sin salidas
+        break;
+    case TerminationReason.ActivityFailed:
+        // Una actividad retornó IsSuccess = false
+        logger.LogError("Actividad falló: {Error}", result.ErrorMessage);
+        break;
+    case TerminationReason.MaxStepsExceeded:
+        // Posible ciclo sin condición de salida
+        logger.LogCritical("Workflow detenido por seguridad tras {Steps} pasos", options.MaxSteps);
+        break;
+    case TerminationReason.Cancelled:
+        // CancellationToken fue cancelado
+        break;
+    case TerminationReason.UnhandledException:
+        // Excepción no controlada dentro de una actividad
+        logger.LogCritical("Excepción inesperada: {Error}", result.ErrorMessage);
+        break;
+}
+```
+
+> `ExecuteAsync` **nunca lanza excepciones**. Todos los errores — incluyendo excepciones no controladas dentro de actividades — se encapsulan en el resultado.
+
+### Ejecución paralela — Fork / Join
+
+Bifurca el flujo en ramas independientes que se ejecutan al mismo tiempo con `Task.WhenAll`:
+
+```csharp
+var workflow = new WorkflowBuilder()
+    .WithName("Procesar pedido")
+    .StartWith(validarPedido)
+    .Fork(
+        rama => rama.Then(verificarCredito),
+        rama => rama.Then(verificarInventario))
+    .Join(procesarPago)
+    .Then(enviarConfirmacion)
+    .Build();
+```
+
+Las ramas reciben un **snapshot del contexto** al momento del fork — las escrituras de una rama no son visibles en las otras. Al join, las variables de todas las ramas se fusionan de vuelta al contexto principal:
+
+```csharp
+// En cada rama puedes escribir variables con SetVariable(...)
+// Al llegar al Join, todas esas variables están disponibles:
+var credito     = context.GetVariable<bool>("creditoAprobado");
+var inventario  = context.GetVariable<bool>("inventarioDisponible");
+```
+
+Si una o más ramas fallan, el engine espera a que **todas** terminen y retorna `BranchFailed`. El nodo join no se ejecuta:
+
+```csharp
+if (result.TerminationReason == TerminationReason.BranchFailed)
+    logger.LogError("Fallo en ramas paralelas: {Error}", result.ErrorMessage);
+```
+
+### Suspensión y reanudación — Persistencia de instancias
+
+Para workflows de larga duración (aprobaciones humanas, procesos multi-día), implementa `IWaitActivity` en cualquier actividad que deba pausar el flujo:
+
+```csharp
+public sealed class EsperarAprobacionActivity : IWaitActivity
+{
+    public string Id   { get; init; } = Guid.NewGuid().ToString();
+    public string Name { get; init; } = "Esperar aprobación";
+
+    public Task<ActivityExecutionResult> ExecuteAsync(
+        WorkflowExecutionContext context,
+        CancellationToken cancellationToken = default)
+    {
+        // Código de setup: enviar email, registrar en BD, etc.
+        context.SetVariable("esperandoDesde", DateTimeOffset.UtcNow);
+        return Task.FromResult(ActivityExecutionResult.Success());
+    }
+}
+```
+
+Cuando el engine encuentra una `IWaitActivity`, la ejecuta y luego suspende devolviendo un `WorkflowCheckpoint`:
+
+```csharp
+var result = await engine.ExecuteAsync(workflow);
+
+if (result.TerminationReason == TerminationReason.Suspended)
+{
+    // Persistir el checkpoint para reanudarlo más tarde
+    await store.SaveAsync(result.Checkpoint!);
+}
+```
+
+Para reanudar, carga el checkpoint y llama a `ResumeAsync` con el outcome de la decisión:
+
+```csharp
+// Días o semanas después...
+var checkpoint = await store.LoadAsync(instanceId);
+var resumed    = await engine.ResumeAsync(checkpoint!, workflow, resumeOutcome: "Approved");
+```
+
+El grafo puede tener múltiples salidas desde una `IWaitActivity` — el outcome de reanudación decide el camino:
+
+```csharp
+var wait = new EsperarAprobacionActivity();
+
+var workflow = new WorkflowBuilder()
+    .WithName("Aprobación de pedido")
+    .StartWith(crearPedido)
+    .Then(wait)
+    .Register(procesarPago)
+    .Register(notificarRechazo)
+    .Connect(wait.Id, procesarPago.Id,    outcome: "Approved")
+    .Connect(wait.Id, notificarRechazo.Id, outcome: "Rejected")
+    .Build();
+```
+
+Para registrar el store en memoria (desarrollo y tests):
+
+```csharp
+builder.Services
+    .AddFlowForge()
+    .AddFlowForgeInMemoryCheckpointStore();
+```
+
+### Contexto compartido entre actividades
+
+```csharp
+var context = new WorkflowExecutionContext();
+context.SetVariable("pedidoId", 12345);
+context.SetVariable("monto", 299.99m);
+
+var result = await engine.ExecuteAsync(workflow, context);
+
+// Las actividades pueden escribir datos en el contexto
+var factura = result.Context?.GetVariable<string>("facturaUrl");
+```
+
+---
+
+## Protección contra ciclos
+
+Los ciclos son válidos en FlowForge (reintentos, aprobaciones iterativas). El sistema los maneja en dos capas:
+
+**Compile-time** — `Build()` detecta ciclos dirigidos con DFS tricolor y emite un warning con el camino exacto:
+
+```
+[Warning] CycleDetected: Validar Pedido —[Retry]→ Procesar Pago —[Done]→ Validar Pedido
+```
+
+**Runtime** — el engine cuenta los pasos ejecutados y detiene la ejecución si se supera `MaxSteps`:
+
+```csharp
+var result = await engine.ExecuteAsync(
+    workflow,
+    options: new WorkflowExecutionOptions { MaxSteps = 50 });
+
+// Si el ciclo no tiene condición de salida:
+// result.TerminationReason == TerminationReason.MaxStepsExceeded
+```
+
+El valor por defecto de `MaxSteps` es **1 000**, suficiente para cualquier workflow lineal y para ciclos de reintento razonables.
+
+---
+
+## Arquitectura interna
+
+### Indexación O(1) en `Build()`
+
+Cuando se llama a `Build()`, el builder compila dos índices:
+
+```
+activitiesById:   Dictionary<string, IActivity>
+connectionIndex:  Dictionary<(sourceId, outcome), targetId>
+```
+
+El loop de ejecución del engine realiza exactamente dos lookups por paso, ambos O(1), independientemente del tamaño del grafo.
+
+### Inmutabilidad de `WorkflowDefinition`
+
+- Constructor `internal` — solo `WorkflowBuilder` puede instanciarla.
+- `Id` y `Name` de `IActivity` son `init`-only — los índices nunca quedan desincronizados.
+- Los índices internos son `IReadOnlyDictionary` — el grafo no puede mutarse después de `Build()`.
+
+### `IWorkflowEngine` como contrato público
+
+`WorkflowEngine` implementa `IWorkflowEngine`. Programar contra la interfaz habilita:
+
+```csharp
+// Registro en DI
+services.AddScoped<IWorkflowEngine, WorkflowEngine>();
+
+// Decoradores sin modificar el Core
+public sealed class TelemetryEngine(IWorkflowEngine inner) : IWorkflowEngine
+{
+    public async Task<WorkflowExecutionResult> ExecuteAsync(...)
+    {
+        using var span = tracer.StartActiveSpan("workflow.execute");
+        var result = await inner.ExecuteAsync(...);
+        span.SetAttribute("termination", result.TerminationReason.ToString());
+        return result;
+    }
+}
+```
+
+### Fallback de outcome
+
+Si una actividad retorna un outcome para el que no existe conexión, el engine intenta automáticamente la conexión `Done` del mismo origen antes de terminar:
+
+```
+outcome "CustomOutcome" → no hay conexión → intenta [Done] → sigue si existe
+```
+
+---
+
+## Integración con Dependency Injection
+
+Añade el paquete `FlowForge.Extensions.DependencyInjection` y registra los servicios en `Program.cs`:
+
+```csharp
+// Registro básico — usa WorkflowExecutionOptions.Default
+builder.Services.AddFlowForge();
+
+// Registro con configuración personalizada
+builder.Services.AddFlowForge(options =>
+{
+    options.MaxSteps = 200; // límite más conservador para este servicio
+});
+```
+
+Luego inyecta `IWorkflowEngine` en cualquier clase:
+
+```csharp
+public class PedidoService(IWorkflowEngine engine)
+{
+    public async Task ProcesarAsync(Pedido pedido)
+    {
+        var context = new WorkflowExecutionContext();
+        context.SetVariable("pedido", pedido);
+
+        var result = await engine.ExecuteAsync(_workflowPedidos, context);
+
+        if (!result.IsSuccess)
+            throw new PedidoException(result.ErrorMessage);
+    }
+}
+```
+
+> `AddFlowForge` usa `TryAdd` internamente: si registraste un decorador o un doble de test antes de llamarlo, ese registro no se sobreescribe.
+
+---
+
+## Sandbox — Demo interactivo
+
+`FlowForge.Sandbox` contiene un flujo completo de aprobación de préstamo que demuestra la integración de todos los features en un escenario real con interacción humana en consola.
+
+**Flujo del demo:**
+
+```
+Recibir solicitud → Analizar riesgo → [SUSPENDER] → Aprobar préstamo
+                                      IWaitActivity  ↘
+                                                      Rechazar préstamo
+```
+
+**Ejecución:**
+
+```
+══════════════════════════════════════════════
+  FlowForge — Aprobación de préstamo
+══════════════════════════════════════════════
+
+▶ Iniciando workflow...
+
+  👤 Solicitante : Carlos Mendoza
+  💰 Monto       : $250,000.00
+  🆔 ID          : SOL-20260220143022
+  📊 Score crediticio: 741
+  📋 Resultado: Riesgo BAJO — apto para comité
+  📧 Expediente enviado al comité de crédito.
+  ⏸️  Workflow suspendido — pendiente de decisión humana.
+
+══════════════════════════════════════════════
+  👔 Decisión del comité [aprobar / rechazar]: aprobar
+══════════════════════════════════════════════
+
+▶ Reanudando con decisión: Approved
+
+  🎉 Préstamo APROBADO
+  📄 Número de crédito: CRED-482910
+  👤 Titular: Carlos Mendoza | Monto: $250,000.00
+
+══════════════════════════════════════════════
+  Estado final  : ✅ Completado
+  Actividades   : 5
+  Duración total: 12ms
+══════════════════════════════════════════════
+```
+
+El demo acepta `aprobar` / `a` / `si` para aprobar y cualquier otra entrada para rechazar. El checkpoint se persiste en `InMemoryWorkflowCheckpointStore` entre la suspensión y la reanudación, simulando el ciclo completo execute → save → load → resume.
+
+---
+
+## Tests
+
+El proyecto `FlowForge.Core.Tests` cubre:
+
+| Suite | Qué verifica |
+|---|---|
+| `WorkflowBuilderTests` | Todos los códigos de `ValidationErrorCode`, warnings vs errores, idempotencia de `Validate()`, conexiones multi-outcome. |
+| `WorkflowEngineTests` | Todos los valores de `TerminationReason`, orden de ejecución, contexto compartido, fallback de outcome, logging con Moq + source generators. |
+| `MiddlewarePipelineTests` | Orden de ejecución del pipeline, cortocircuito, modificación de outcome, timing middleware, integración con DI. |
+| `ParallelExecutionTests` | Fork/Join con 2 y 3 ramas, aislamiento de contexto entre ramas, fusión de variables al join, fallo de rama (`BranchFailed`), ramas multi-paso, orden global inicio-fork-join-final. |
+| `PersistenceTests` | Suspensión en `IWaitActivity`, checkpoint con contexto y historial, `ResumeAsync` con outcomes condicionales, múltiples puntos de espera, flujo completo execute→save→load→resume, operaciones del store. |
+| `WorkflowDefinitionTests` | `GetActivity` O(1), `GetNextActivityId` con outcome exacto, fallback a Done, retorno null en nodo terminal. |
+| `ActivityExecutionResultTests` | Factory methods, `GetOutput<T>` con tipo correcto/incompatible/null, integración con engine. |
+| `WorkflowExecutionContextTests` | API tipada completa, encapsulación de `Variables`, validación de argumentos, variables compartidas. |
+| `FlowForgeServiceCollectionExtensionsTests` | Registro, lifetime Scoped, opciones inyectadas, comportamiento `TryAdd`, encadenamiento. |
+| `ArchitectureTests` | Reglas estructurales con NetArchTest: dependencias entre capas, visibilidad de interfaces públicas, `WorkflowValidator` internal. |
+
+**Stack de testing:** xUnit · Shouldly · Moq · NetArchTest · coverlet
+
+---
+
+## Roadmap
+
+### ✅ Completado
+
+- [x] Fluent builder API (`StartWith` / `Then` / `Connect` / `Register` / `Build`)
+- [x] Indexación O(1) en `Build()` — sin búsquedas lineales en ejecución
+- [x] `WorkflowDefinition` inmutable con constructor `internal`
+- [x] `IActivity` con propiedades `init`-only — índices siempre consistentes
+- [x] Framework de validación con errores bloqueantes y advertencias
+- [x] Detección de ciclos dirigidos con DFS tricolor y camino exacto en el mensaje
+- [x] Guardia de runtime contra ciclos infinitos (`MaxSteps`)
+- [x] `TerminationReason` tipado — sin strings mágicos en el resultado
+- [x] `IWorkflowEngine` — contrato público para DI y decoradores
+- [x] Logging estructurado con `[LoggerMessage]` source generators
+- [x] Suite de tests: unitarios, integración y arquitectura
+- [x] Eliminación de strings mágicos (`ActivityOutcomes.Done / Failed`)
+- [x] `WorkflowExecutionContext.Variables` encapsulado — API tipada completa (`GetVariable<T>` / `SetVariable` / `ContainsVariable` / `RemoveVariable`)
+- [x] `GetOutput<T>()` en `ActivityExecutionResult` — acceso tipado y seguro al output de una actividad sin riesgo de `InvalidCastException` (propiedad raw renombrada a `RawOutput` para claridad)
+- [x] `FlowForge.Extensions.DependencyInjection` — `AddFlowForge()` con overload de configuración, `TryAdd` para respetar registros previos, `WorkflowEngine` con opciones inyectables por constructor
+- [x] Middleware pipeline — `IActivityMiddleware` / `ActivityMiddlewareDelegate`, composición O(1) por ejecución, `AddFlowForgeMiddleware<T>()` para registro desde DI con orden preservado
+- [x] Ejecución paralela de actividades — `Fork` / `Join` con `Task.WhenAll`, contexto hijo por rama, fusión al join con last-write-wins, `TerminationReason.BranchFailed` y `ForkNode` sintético para compatibilidad con el validador
+- [x] Persistencia de instancias — `IWaitActivity` como punto de suspensión, `WorkflowCheckpoint` con contexto y historial, `ResumeAsync` con outcome configurable, `IWorkflowCheckpointStore` / `InMemoryWorkflowCheckpointStore`, `AddFlowForgeInMemoryCheckpointStore()` para DI
+
+---
+
+*FlowForge · .NET 10 · MIT License*
