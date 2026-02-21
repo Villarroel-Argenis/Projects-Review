@@ -1,6 +1,6 @@
 # FlowForge — Case Management Roadmap
 
-> Módulo que transforma el workflow engine del Core en una plataforma BPM con expedientes, ciclo de vida, SLA y auditoría completa. Equivalente al "Case Type" de PEGA.
+> Módulo que transforma el workflow engine del Core en una plataforma BPM con expedientes, ciclo de vida, SLA y auditoría completa.
 
 ---
 
@@ -128,7 +128,7 @@ Dtos/
 ---
 
 ### Fase 3 — Sub-Cases y jerarquía
-**Objetivo:** Un Case padre puede contener Cases hijo que se ejecutan en paralelo o en secuencia. Equivalente a los "Child Cases" de PEGA.  
+**Objetivo:** Un Case padre puede contener Cases hijo que se ejecutan en paralelo o en secuencia. 
 **Prioridad:** 🟡 Alta — necesario para procesos complejos (ej. onboarding con sub-procesos de KYC, compliance y crédito en paralelo).
 
 #### Tareas
@@ -277,7 +277,7 @@ GET /cases/metrics/throughput?days=7 → completados por día
 ---
 
 ### Fase 8 — Designer visual de CaseDefinitions
-**Objetivo:** Que analistas de negocio puedan crear y modificar CaseTypes sin escribir código. Equivalente al "App Studio" de PEGA.  
+**Objetivo:** Que analistas de negocio puedan crear y modificar CaseTypes sin escribir código. 
 **Prioridad:** 🔵 Baja — máximo valor, máximo esfuerzo.
 
 #### Tareas
