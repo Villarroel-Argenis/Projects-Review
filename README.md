@@ -3,7 +3,10 @@
 Motor de ejecución de workflows para .NET 10, diseñado con énfasis en corrección estructural, rendimiento en runtime y extensibilidad progresiva.
 
 ---
+Ver también:
+[CaseManagement Roadmap](CaseManagement.Roadmap.md)
 
+---
 ## Tabla de contenidos
 
 - [Estructura del proyecto](#estructura-del-proyecto)
