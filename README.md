@@ -596,7 +596,7 @@ El proyecto `FlowForge.Core.Tests` cubre:
 
 ### 🔜 Próximos pasos
 
-La siguiente fase evoluciona FlowForge hacia una plataforma de gestión de procesos de negocio (BPM) completa, con capacidades equivalentes a sistemas como PEGA. Las entregas están ordenadas por dependencia: cada paso habilita los siguientes.
+La siguiente fase evoluciona FlowForge hacia una plataforma de gestión de procesos de negocio (BPM) completa. Las entregas están ordenadas por dependencia: cada paso habilita los siguientes.
 
 ---
 
