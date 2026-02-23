@@ -3,10 +3,7 @@
 Motor de ejecución de workflows para .NET 10, diseñado con énfasis en corrección estructural, rendimiento en runtime y extensibilidad progresiva.
 
 ---
-Ver también:
-[CaseManagement Roadmap](CaseManagement.Roadmap.md)
 
----
 ## Tabla de contenidos
 
 - [Estructura del proyecto](#estructura-del-proyecto)
@@ -594,6 +591,129 @@ El proyecto `FlowForge.Core.Tests` cubre:
 - [x] Middleware pipeline — `IActivityMiddleware` / `ActivityMiddlewareDelegate`, composición O(1) por ejecución, `AddFlowForgeMiddleware<T>()` para registro desde DI con orden preservado
 - [x] Ejecución paralela de actividades — `Fork` / `Join` con `Task.WhenAll`, contexto hijo por rama, fusión al join con last-write-wins, `TerminationReason.BranchFailed` y `ForkNode` sintético para compatibilidad con el validador
 - [x] Persistencia de instancias — `IWaitActivity` como punto de suspensión, `WorkflowCheckpoint` con contexto y historial, `ResumeAsync` con outcome configurable, `IWorkflowCheckpointStore` / `InMemoryWorkflowCheckpointStore`, `AddFlowForgeInMemoryCheckpointStore()` para DI
+
+---
+
+### 🔜 Próximos pasos
+
+La siguiente fase evoluciona FlowForge hacia una plataforma de gestión de procesos de negocio (BPM) completa, con capacidades equivalentes a sistemas como PEGA. Las entregas están ordenadas por dependencia: cada paso habilita los siguientes.
+
+---
+
+#### Paso 1 — Persistent Store (EF Core) · *prerequisito de todo lo siguiente*
+
+Reemplaza `InMemoryWorkflowCheckpointStore` con una implementación SQL real como nuevo paquete `FlowForge.Persistence.EntityFramework`. El store debe exponer queries indexadas por `EventName`, `TimeoutAt` y `Status` para soportar el event dispatcher y el SLA monitor de forma eficiente.
+
+```
+FlowForge.Persistence.EntityFramework/
+├── FlowForgeDbContext.cs
+├── EfWorkflowCheckpointStore.cs     # IWorkflowCheckpointStore sobre EF Core
+├── Migrations/
+└── FlowForgeEfServiceCollectionExtensions.cs   # AddFlowForgeEfStore(connectionString)
+```
+
+Los métodos nuevos que el store debe implementar son:
+- `FindByEventNameAsync(eventName)` — para el event dispatcher
+- `FindExpiredAsync(asOf)` — para el SLA monitor y timeouts
+
+---
+
+#### Paso 2 — Case Management · *diferenciador principal*
+
+Introduce la entidad `WorkflowCase`: una entidad de negocio con ciclo de vida propio que puede contener múltiples ejecuciones de workflow, sub-casos, historial de auditoría y documentos adjuntos. Es el salto conceptual clave: FlowForge deja de gestionar "ejecuciones" para gestionar **casos**.
+
+```
+FlowForge.CaseManagement/
+├── Models/
+│   ├── WorkflowCase.cs          # entidad raíz — CaseId, CaseType, Status, Data, ParentCaseId
+│   ├── CaseHistoryEntry.cs      # registro inmutable de cada transición
+│   └── CaseStatus.cs            # Open / InProgress / Suspended / Closed
+├── ICaseRepository.cs           # separado de IWorkflowCheckpointStore
+├── ICaseService.cs              # OpenAsync / TransitionAsync / CloseAsync / AttachDocumentAsync
+└── CaseServiceCollectionExtensions.cs
+```
+
+Un caso sobrevive a múltiples ejecuciones de workflow — por ejemplo, una solicitud de crédito que pasa por evaluación, aprobación y desembolso son tres workflows distintos sobre el mismo `WorkflowCase`.
+
+---
+
+#### Paso 3 — SLA Engine · *sobre `WaitForEventActivity`*
+
+Expande el soporte de `Timeout` en `WaitForEventActivity` a un motor de SLAs completo con objetivos (goal), deadlines hard y escalación automática. Un `BackgroundService` dedicado — el **SLA Monitor** — evalúa periódicamente los checkpoints activos y fuerza outcomes de escalación cuando se vencen los plazos.
+
+```
+FlowForge.Sla/
+├── Models/
+│   └── SlaDefinition.cs         # ActivityId, Goal, Deadline, EscalateTo, OnBreachOutcome
+├── ISlaRepository.cs
+├── SlaMonitor.cs                # BackgroundService — tick cada minuto
+└── SlaServiceCollectionExtensions.cs
+```
+
+El SLA Monitor reutiliza `FindExpiredAsync` del store (Paso 1) y el `WorkflowEventDispatcher` (Paso 4) para reanudar instancias con el outcome `SlaBreached` sin modificar el Core.
+
+---
+
+#### Paso 4 — Event Bus integrado · *sobre `WorkflowEventDispatcher`*
+
+Abstrae el transporte de eventos detrás de `IWorkflowEventBus` e introduce adaptadores intercambiables como paquetes independientes. El dispatcher del Core no cambia — solo varía el adaptador registrado en DI.
+
+```
+FlowForge.Messaging/
+├── IWorkflowEventBus.cs
+└── InMemoryWorkflowEventBus.cs   # para desarrollo y tests
+
+FlowForge.Messaging.MassTransit/
+FlowForge.Messaging.AzureServiceBus/
+FlowForge.Messaging.Kafka/
+```
+
+---
+
+#### Paso 5 — Rules Engine · *sobre `IActivity`*
+
+Permite definir reglas de negocio como tablas de decisión serializables (JSON / base de datos), evaluables en runtime sin recompilación. Cada regla se envuelve en una `RuleActivity` estándar — el motor no distingue entre una actividad codificada y una basada en reglas.
+
+```
+FlowForge.Rules/
+├── IBusinessRule.cs
+├── DecisionTableRule.cs          # filas condición → outcome, cargadas desde BD
+├── RuleActivity.cs               # IActivity que delega en IBusinessRule
+├── IRuleRepository.cs            # carga y versiona reglas desde BD
+└── RulesServiceCollectionExtensions.cs
+```
+
+Las reglas se versionan: una nueva versión de una regla no afecta a instancias en vuelo que ya cargaron la versión anterior.
+
+---
+
+### 🔭 Futuro (post fase 2)
+
+- **API REST** — endpoints para iniciar casos, consultar estado, disparar eventos y gestionar tareas humanas. Habilita integraciones externas sin acceso directo al Core.
+- **UI de tareas humanas** — formularios Blazor generados a partir de metadatos del caso. Equivalente al portal de trabajo de PEGA.
+- **Multi-tenancy** — aislamiento de datos por tenant en el store y el repositorio de casos. Prerequisito para oferta SaaS.
+- **Reporting y auditoría** — dashboards de throughput, SLA compliance y cuello de botella por actividad, construidos sobre `CaseHistoryEntry`.
+- **Designer visual** — editor de workflows drag-and-drop que genera definiciones compatibles con `WorkflowBuilder`. La definición compilada e inmutable del Core garantiza que cualquier grafo válido del designer sea ejecutable sin modificaciones.
+
+---
+
+### Visión de la arquitectura objetivo
+
+```
+┌─────────────────────────────────────────────────┐
+│  UI — Blazor Portal / API REST                  │  futuro
+├─────────────────────────────────────────────────┤
+│  Case Management    │  Rules Engine             │  paso 2 & 5
+├─────────────────────────────────────────────────┤
+│  SLA Engine         │  Event Bus               │  paso 3 & 4
+├─────────────────────────────────────────────────┤
+│  FlowForge.Core  ✅  (motor, builder, DI)       │  hoy
+├─────────────────────────────────────────────────┤
+│  Persistent Store — EF Core / SQL               │  paso 1
+└─────────────────────────────────────────────────┘
+```
+
+> FlowForge parte con una ventaja estructural sobre sistemas BPM maduros: `WorkflowDefinition` inmutable, indexación O(1), `ExecuteAsync` que nunca lanza excepciones y un middleware pipeline componible. Cada capa nueva se construye *sobre* esa base sin modificarla.
 
 ---
 
