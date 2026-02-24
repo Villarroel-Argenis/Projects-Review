@@ -16,6 +16,8 @@ Motor de ejecución de workflows para .NET 10, diseñado con énfasis en correcc
 - [Protección contra ciclos](#protección-contra-ciclos)
 - [Arquitectura interna](#arquitectura-interna)
 - [Integración con Dependency Injection](#integración-con-dependency-injection)
+- [Persistent Store — EF Core](#persistent-store--ef-core)
+- [Case Management](#case-management)
 - [Sandbox — Demo interactivo](#sandbox--demo-interactivo)
 - [Tests](#tests)
 - [Roadmap](#roadmap)
@@ -44,12 +46,15 @@ FlowForge/
 │   │   ├── ActivityOutcomes.cs     # Constantes Done / Failed
 │   │   ├── ParallelGroup.cs        # Metadata de un grupo fork/join
 │   │   ├── TerminationReason.cs
+│   │   ├── WaitForEventKeys.cs     # Claves reservadas de contexto para IWaitActivity
 │   │   ├── WorkflowCheckpoint.cs   # Snapshot de instancia suspendida
 │   │   ├── WorkflowDefinition.cs   # Grafo compilado e inmutable
 │   │   └── WorkflowExecutionResult.cs
 │   ├── Persistence/
 │   │   ├── IWorkflowCheckpointStore.cs       # Contrato de persistencia
 │   │   └── InMemoryWorkflowCheckpointStore.cs # Implementación en memoria
+│   ├── Serialization/
+│   │   └── WorkflowCheckpointSerializer.cs   # Serializa/deserializa checkpoints con type tags
 │   └── Validation/
 │       ├── ValidationErrorCode.cs
 │       ├── ValidationSeverity.cs
@@ -59,6 +64,43 @@ FlowForge/
 │
 ├── FlowForge.Extensions.DependencyInjection/   # Integración con el ecosistema .NET DI
 │   └── FlowForgeServiceCollectionExtensions.cs # AddFlowForge() / AddFlowForge(options =>)
+│
+├── FlowForge.Persistence.EntityFramework/      # Store persistente — SQL Server, PostgreSQL, SQLite
+│   ├── CheckpointEntity.cs                     # Fila de BD con columnas de proyección desnormalizadas
+│   ├── FlowForgeDbContext.cs                   # DbContext con índices optimizados
+│   ├── EfWorkflowCheckpointStore.cs            # Implementación de IWorkflowCheckpointStoreExtended
+│   ├── IWorkflowCheckpointStore.Extended.cs    # Extiende el contrato con FindByEventName / FindExpired
+│   ├── FlowForgeEfServiceCollectionExtensions.cs  # AddFlowForgeSqlServerStore / PostgreSql / Sqlite
+│   └── Migrations/
+│       └── MIGRATIONS_GUIDE.cs                 # Comandos dotnet-ef por proveedor
+│
+├── FlowForge.Persistence.EntityFramework.Tests/ # Tests de integración del store EF Core
+│   └── EfWorkflowCheckpointStoreTests.cs
+│
+├── FlowForge.CaseManagement/                   # Case Management — ciclo de vida de casos de negocio
+│   ├── Models/
+│   │   ├── CaseStatus.cs                       # Open / InProgress / Suspended / Closed / Cancelled
+│   │   ├── WorkflowCase.cs                     # Entidad raíz del caso — payload tipado con GetData<T>/SetData<T>
+│   │   ├── CaseHistoryEntry.cs                 # Registro inmutable de auditoría + CaseEventType enum
+│   │   ├── CaseAttachment.cs                   # Metadatos de documentos adjuntos (sin binarios)
+│   │   ├── CaseComment.cs                      # Comentarios de usuarios y sistema
+│   │   └── CaseWorkflowExecution.cs            # Registro de una ejecución de workflow dentro del caso
+│   ├── Abstractions/
+│   │   ├── ICaseRepository.cs                  # Contrato de persistencia — separado de IWorkflowCheckpointStore
+│   │   └── ICaseService.cs                     # Contrato del servicio de aplicación
+│   ├── Services/
+│   │   └── CaseService.cs                      # Orquesta ciclo de vida y auditoría automática
+│   └── CaseManagementServiceCollectionExtensions.cs  # AddFlowForgeCaseManagement()
+│
+├── FlowForge.CaseManagement.EntityFramework/   # Persistencia EF Core para Case Management
+│   ├── Entities/
+│   │   └── CaseEntities.cs                     # Entidades de BD: Case, History, Attachment, Comment, Execution
+│   ├── FlowForgeCaseDbContext.cs               # DbContext con índices optimizados para las queries del servicio
+│   ├── EfCaseRepository.cs                     # Implementación de ICaseRepository sobre EF Core
+│   └── FlowForgeCaseEfServiceCollectionExtensions.cs  # AddFlowForgeCaseEfRepository()
+│
+├── FlowForge.CaseManagement.Tests/             # Tests de integración del Case Management
+│   └── CaseServiceTests.cs
 │
 ├── FlowForge.Sandbox/              # Demo interactivo — aprobación de préstamo
 │   ├── Program.cs                  # Flujo completo: ejecutar → suspender → decisión humana → reanudar
@@ -498,6 +540,246 @@ public class PedidoService(IWorkflowEngine engine)
 
 ---
 
+## Persistent Store — EF Core
+
+El paquete `FlowForge.Persistence.EntityFramework` reemplaza `InMemoryWorkflowCheckpointStore` con una implementación SQL real, compatible con SQL Server, PostgreSQL y SQLite.
+
+### Serialización de checkpoints — `WorkflowCheckpointSerializer`
+
+La serialización vive en `FlowForge.Core.Serialization.WorkflowCheckpointSerializer`. El store EF Core la delega completamente — no contiene lógica de serialización propia.
+
+El deserializador resuelve dos problemas que `System.Text.Json` no puede manejar por sí solo sobre `WorkflowCheckpoint`:
+
+**Diccionario privado** — `WorkflowExecutionContext` expone `_variables` como `private` para encapsular el acceso tipado. El serializer usa los métodos `internal` `GetVariables()` y `LoadVariables()` diseñados explícitamente para este fin, accesibles desde el mismo assembly.
+
+**Tipos CLR en variables** — sin metadatos de tipo, `System.Text.Json` devuelve `JsonElement` al deserializar un `Dictionary<string, object?>`, lo que hace que `GetVariable<int>()` retorne `default`. El serializer resuelve esto con type tags cortos:
+
+| Tag | Tipo CLR | Ejemplo serializado |
+|---|---|---|
+| `s` | `string` | `"hola mundo"` |
+| `i` | `int` | `"42"` |
+| `l` | `long` | `"9876543210"` |
+| `f` | `double` | `"3.14"` |
+| `d` | `decimal` | `"299.99"` |
+| `b` | `bool` | `"1"` / `"0"` |
+| `dt` | `DateTime` | `"2026-02-24T10:00:00.0000000"` |
+| `dto` | `DateTimeOffset` | `"2026-02-24T10:00:00.0000000+00:00"` |
+| `g` | `Guid` | `"550e8400-e29b-41d4-a716-446655440000"` |
+| `ts` | `TimeSpan` | `"01:30:00"` |
+| `j` | cualquier objeto | JSON anidado (fallback) |
+
+Los tags son portables — no dependen de `AssemblyQualifiedName` y no se rompen al renombrar namespaces.
+
+### Estrategia de almacenamiento
+
+Cada checkpoint se almacena como una única fila en la tabla `FlowForge_Checkpoints`. El payload completo (`WorkflowCheckpoint`) se serializa a JSON mediante `WorkflowCheckpointSerializer` en la columna `CheckpointJson`. Las columnas `EventName`, `TimeoutAt` y `Status` se desnormalizan para soportar las queries del event dispatcher y el SLA monitor sin necesidad de deserializar el JSON en la consulta.
+
+```
+FlowForge_Checkpoints
+─────────────────────────────────────────────────────────
+InstanceId      PK  varchar(128)
+EventName           varchar(256)   — proyectado desde contexto
+TimeoutAt           datetimeoffset — proyectado desde contexto
+Status              varchar(32)    — Suspended | Resumed | Expired
+CheckpointJson      text           — payload JSON completo
+CreatedAt           datetimeoffset
+UpdatedAt           datetimeoffset
+```
+
+Los índices `IX_Checkpoints_EventName_Status` y `IX_Checkpoints_TimeoutAt_Status` garantizan que `FindByEventNameAsync` y `FindExpiredAsync` sean O(log n) sobre el store SQL.
+
+### Registro por proveedor
+
+```csharp
+// SQL Server
+builder.Services.AddFlowForgeSqlServerStore(
+    connectionString: builder.Configuration.GetConnectionString("FlowForge")!);
+
+// PostgreSQL
+builder.Services.AddFlowForgePostgreSqlStore(
+    connectionString: builder.Configuration.GetConnectionString("FlowForge")!);
+
+// SQLite — desarrollo y tests de integración
+builder.Services.AddFlowForgeSqliteStore("Data Source=flowforge.db");
+```
+
+Todos los métodos usan `TryAdd` internamente: si registraste un decorador antes de llamarlos, ese registro no se sobreescribe.
+
+### Extensión del contrato de persistencia
+
+El store EF Core implementa `IWorkflowCheckpointStoreExtended`, que amplía `IWorkflowCheckpointStore` con dos métodos nuevos:
+
+```csharp
+// Devuelve todos los checkpoints suspendidos que esperan un evento concreto
+Task<IReadOnlyList<WorkflowCheckpoint>> FindByEventNameAsync(string eventName, CancellationToken ct);
+
+// Devuelve todos los checkpoints suspendidos cuyo TimeoutAt <= asOf y los marca como Expired
+Task<IReadOnlyList<WorkflowCheckpoint>> FindExpiredAsync(DateTimeOffset asOf, CancellationToken ct);
+```
+
+`FindExpiredAsync` marca atómicamente los registros como `Expired` en la misma operación, evitando que el SLA Monitor los procese dos veces en ejecuciones consecutivas.
+
+### Migraciones
+
+Aplica las migraciones pendientes al arrancar la aplicación:
+
+```csharp
+await using var scope = app.Services.CreateAsyncScope();
+var db = scope.ServiceProvider.GetRequiredService<FlowForgeDbContext>();
+await db.Database.MigrateAsync();
+```
+
+Para crear la migración inicial con `dotnet-ef`:
+
+```bash
+# SQL Server
+dotnet ef migrations add InitialCreate \
+  --project FlowForge.Persistence.EntityFramework \
+  --startup-project <tu-proyecto-de-startup>
+
+# SQLite (desarrollo / tests)
+# En tests usa EnsureCreated() en lugar de migraciones
+dbContext.Database.EnsureCreated();
+```
+
+### Configuración avanzada
+
+El segundo parámetro de cada método acepta un `Action<DbContextOptionsBuilder>` para configuración adicional:
+
+```csharp
+builder.Services.AddFlowForgeSqlServerStore(connectionString, options =>
+{
+    options.EnableSensitiveDataLogging(); // solo en desarrollo
+    options.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);
+});
+```
+
+---
+
+## Case Management
+
+El paquete `FlowForge.CaseManagement` introduce la entidad `WorkflowCase` — una unidad de negocio con ciclo de vida propio que sobrevive a múltiples ejecuciones de workflow. Es el salto conceptual clave respecto al motor puro: FlowForge pasa de gestionar *ejecuciones* a gestionar *casos*.
+
+### Modelo de datos
+
+Un caso tiene cinco entidades relacionadas, todas cargadas por el repositorio:
+
+```
+WorkflowCase
+├── CaseHistoryEntry[]    — auditoría inmutable de cada transición y evento
+├── CaseAttachment[]      — metadatos de documentos adjuntos (sin binarios)
+├── CaseComment[]         — comentarios de usuarios y del sistema
+├── CaseWorkflowExecution[] — registro de cada ejecución de workflow dentro del caso
+└── SubCases (WorkflowCase[]) — casos hijos con su propio ciclo de vida
+```
+
+### Ciclo de vida
+
+```
+Open → InProgress → Suspended → InProgress → Closed
+  ↘                                         ↗
+   ────────────── Cancelled ───────────────
+```
+
+Las transiciones desde `Closed` o `Cancelled` lanzan `InvalidOperationException` — son estados terminales.
+
+### Payload de negocio
+
+El campo `DataJson` almacena el payload del caso serializado. Accede a él con los helpers tipados:
+
+```csharp
+// Escritura — serializa automáticamente a JSON
+@case.SetData(new SolicitudCredito { Monto = 250_000m, Solicitante = "Carlos Mendoza" });
+
+// Lectura — deserializa de vuelta al tipo original
+var solicitud = @case.GetData<SolicitudCredito>();
+Console.WriteLine(solicitud?.Monto); // 250000
+```
+
+### Registrar servicios
+
+```csharp
+// Registra ICaseService + CaseService
+builder.Services.AddFlowForgeCaseManagement();
+
+// Registra ICaseRepository con EF Core (proveedor genérico)
+builder.Services.AddFlowForgeCaseEfRepository(options =>
+    options.UseSqlServer(connectionString));
+
+// Aplica migraciones al arrancar
+await using var scope = app.Services.CreateAsyncScope();
+var db = scope.ServiceProvider.GetRequiredService<FlowForgeCaseDbContext>();
+await db.Database.MigrateAsync();
+```
+
+### Ciclo de vida completo — ejemplo
+
+```csharp
+// 1. Abrir el caso
+var @case = await caseService.OpenAsync(
+    caseType:    "LoanApplication",
+    title:       "Préstamo Carlos Mendoza",
+    description: "Solicitud de crédito hipotecario",
+    createdBy:   "oficina-norte");
+
+@case.SetData(new SolicitudCredito { Monto = 250_000m });
+
+// 2. Iniciar el primer workflow — transiciona a InProgress automáticamente
+await caseService.RecordWorkflowStartedAsync(@case.CaseId, "EvaluacionRiesgo", workflowInstanceId);
+
+// El workflow se suspende esperando decisión del comité
+await caseService.RecordWorkflowSuspendedAsync(@case.CaseId, workflowInstanceId);
+
+// Días después — el comité aprueba
+await caseService.RecordWorkflowResumedAsync(@case.CaseId, workflowInstanceId);
+await caseService.RecordWorkflowCompletedAsync(@case.CaseId, workflowInstanceId);
+
+// 3. Segundo workflow — desembolso
+await caseService.RecordWorkflowStartedAsync(@case.CaseId, "Desembolso", instanceId2);
+await caseService.RecordWorkflowCompletedAsync(@case.CaseId, instanceId2);
+
+// 4. Adjuntar documentos
+await caseService.AddAttachmentAsync(@case.CaseId, "contrato.pdf", "application/pdf",
+    sizeBytes: 102_400, storageUri: "blob://contratos/contrato.pdf");
+
+// 5. Cerrar el caso
+await caseService.CloseAsync(@case.CaseId, actorId: "sistema");
+```
+
+Cada operación registra automáticamente su entrada en el historial de auditoría — sin código adicional del caller.
+
+### Auditoría — historial completo
+
+```csharp
+var history = await caseService.GetAsync(@case.CaseId);
+// Cargado con historial completo por el repositorio
+
+foreach (var entry in @case.History)
+    Console.WriteLine($"[{entry.OccurredAt:HH:mm}] {entry.EventType}: {entry.Description}");
+
+// [09:01] Created: Caso 'Préstamo Carlos Mendoza' creado.
+// [09:01] WorkflowStarted: Workflow 'EvaluacionRiesgo' iniciado.
+// [09:02] WorkflowSuspended: Workflow suspendido. InstanceId: ...
+// [09:15] WorkflowResumed: Workflow reanudado.
+// [09:15] WorkflowCompleted: Workflow completado.
+// [09:16] WorkflowStarted: Workflow 'Desembolso' iniciado.
+// [09:16] WorkflowCompleted: Workflow completado.
+// [09:16] AttachmentAdded: Adjunto 'contrato.pdf' añadido.
+// [09:16] StatusChanged: Estado cambiado de InProgress a Closed.
+```
+
+### Tablas en BD
+
+```
+FlowForge_Cases                 — entidad raíz del caso
+FlowForge_CaseHistory           — auditoría inmutable (append-only)
+FlowForge_CaseAttachments       — metadatos de adjuntos
+FlowForge_CaseComments          — comentarios
+FlowForge_CaseWorkflowExecutions — ejecuciones de workflow por caso
+```
+
+---
+
 ## Sandbox — Demo interactivo
 
 `FlowForge.Sandbox` contiene un flujo completo de aprobación de préstamo que demuestra la integración de todos los features en un escenario real con interacción humana en consola.
@@ -564,8 +846,10 @@ El proyecto `FlowForge.Core.Tests` cubre:
 | `WorkflowExecutionContextTests` | API tipada completa, encapsulación de `Variables`, validación de argumentos, variables compartidas. |
 | `FlowForgeServiceCollectionExtensionsTests` | Registro, lifetime Scoped, opciones inyectadas, comportamiento `TryAdd`, encadenamiento. |
 | `ArchitectureTests` | Reglas estructurales con NetArchTest: dependencias entre capas, visibilidad de interfaces públicas, `WorkflowValidator` internal. |
+| `EfWorkflowCheckpointStoreTests` | `SaveAsync` / `LoadAsync` / `DeleteAsync` / `ListAsync`, proyección de columnas `EventName` y `TimeoutAt`, `FindByEventNameAsync`, `FindExpiredAsync` con marcado atómico, registro DI genérico, comportamiento `TryAdd`. Corre sobre SQLite in-memory sin infraestructura. |
+| `CaseServiceTests` | `OpenAsync` con historial, transiciones válidas e inválidas desde terminales, ciclo completo multi-workflow, integración suspend/resume, comentarios, adjuntos, sub-casos, queries del repositorio (`FindByCaseType`, `FindByStatus`, `FindByAssignee`), registro DI. |
 
-**Stack de testing:** xUnit · Shouldly · Moq · NetArchTest · coverlet
+**Stack de testing:** xUnit · Shouldly · Moq · NetArchTest · coverlet · Microsoft.Data.Sqlite
 
 ---
 
@@ -591,6 +875,9 @@ El proyecto `FlowForge.Core.Tests` cubre:
 - [x] Middleware pipeline — `IActivityMiddleware` / `ActivityMiddlewareDelegate`, composición O(1) por ejecución, `AddFlowForgeMiddleware<T>()` para registro desde DI con orden preservado
 - [x] Ejecución paralela de actividades — `Fork` / `Join` con `Task.WhenAll`, contexto hijo por rama, fusión al join con last-write-wins, `TerminationReason.BranchFailed` y `ForkNode` sintético para compatibilidad con el validador
 - [x] Persistencia de instancias — `IWaitActivity` como punto de suspensión, `WorkflowCheckpoint` con contexto y historial, `ResumeAsync` con outcome configurable, `IWorkflowCheckpointStore` / `InMemoryWorkflowCheckpointStore`, `AddFlowForgeInMemoryCheckpointStore()` para DI
+- [x] Persistent Store EF Core — `EfWorkflowCheckpointStore` sobre SQL Server / PostgreSQL / SQLite, serialización JSON en columna, índices O(log n) para `FindByEventNameAsync` y `FindExpiredAsync`, `IWorkflowCheckpointStoreExtended`, migraciones con `dotnet-ef`, `AddFlowForgeSqlServerStore` / `AddFlowForgePostgreSqlStore` / `AddFlowForgeSqliteStore`
+- [x] `WorkflowCheckpointSerializer` — serialización robusta del checkpoint con type tags (`s` / `i` / `d` / `dto` / `j` …), resuelve el diccionario privado de `WorkflowExecutionContext` vía `GetVariables()` / `LoadVariables()` internos, compatible con todos los proveedores EF Core
+- [x] Case Management — `WorkflowCase` con ciclo de vida (`Open→InProgress→Suspended→Closed/Cancelled`), `CaseHistoryEntry` inmutable, `CaseAttachment`, `CaseComment`, `CaseWorkflowExecution`, `ICaseRepository` / `ICaseService` / `CaseService`, persistencia EF Core (`FlowForgeCaseDbContext` + `EfCaseRepository`), `AddFlowForgeCaseManagement()` / `AddFlowForgeCaseEfRepository()`
 
 ---
 
@@ -600,40 +887,15 @@ La siguiente fase evoluciona FlowForge hacia una plataforma de gestión de proce
 
 ---
 
-#### Paso 1 — Persistent Store (EF Core) · *prerequisito de todo lo siguiente*
+#### ~~Paso 1 — Persistent Store (EF Core)~~ · ✅ *Completado*
 
-Reemplaza `InMemoryWorkflowCheckpointStore` con una implementación SQL real como nuevo paquete `FlowForge.Persistence.EntityFramework`. El store debe exponer queries indexadas por `EventName`, `TimeoutAt` y `Status` para soportar el event dispatcher y el SLA monitor de forma eficiente.
-
-```
-FlowForge.Persistence.EntityFramework/
-├── FlowForgeDbContext.cs
-├── EfWorkflowCheckpointStore.cs     # IWorkflowCheckpointStore sobre EF Core
-├── Migrations/
-└── FlowForgeEfServiceCollectionExtensions.cs   # AddFlowForgeEfStore(connectionString)
-```
-
-Los métodos nuevos que el store debe implementar son:
-- `FindByEventNameAsync(eventName)` — para el event dispatcher
-- `FindExpiredAsync(asOf)` — para el SLA monitor y timeouts
+Store SQL real sobre EF Core con soporte para SQL Server, PostgreSQL y SQLite. Serialización JSON en columna, índices O(log n) para el event dispatcher y SLA monitor, y extensión del contrato base con `IWorkflowCheckpointStoreExtended`. Ver sección [Persistent Store — EF Core](#persistent-store--ef-core).
 
 ---
 
-#### Paso 2 — Case Management · *diferenciador principal*
+#### ~~Paso 2 — Case Management~~ · ✅ *Completado*
 
-Introduce la entidad `WorkflowCase`: una entidad de negocio con ciclo de vida propio que puede contener múltiples ejecuciones de workflow, sub-casos, historial de auditoría y documentos adjuntos. Es el salto conceptual clave: FlowForge deja de gestionar "ejecuciones" para gestionar **casos**.
-
-```
-FlowForge.CaseManagement/
-├── Models/
-│   ├── WorkflowCase.cs          # entidad raíz — CaseId, CaseType, Status, Data, ParentCaseId
-│   ├── CaseHistoryEntry.cs      # registro inmutable de cada transición
-│   └── CaseStatus.cs            # Open / InProgress / Suspended / Closed
-├── ICaseRepository.cs           # separado de IWorkflowCheckpointStore
-├── ICaseService.cs              # OpenAsync / TransitionAsync / CloseAsync / AttachDocumentAsync
-└── CaseServiceCollectionExtensions.cs
-```
-
-Un caso sobrevive a múltiples ejecuciones de workflow — por ejemplo, una solicitud de crédito que pasa por evaluación, aprobación y desembolso son tres workflows distintos sobre el mismo `WorkflowCase`.
+Entidad `WorkflowCase` con ciclo de vida propio, historial de auditoría inmutable, adjuntos, comentarios y sub-casos. Un caso puede contener múltiples ejecuciones de workflow secuenciales. Ver sección [Case Management](#case-management).
 
 ---
 
@@ -690,7 +952,7 @@ Las reglas se versionan: una nueva versión de una regla no afecta a instancias 
 ### 🔭 Futuro (post fase 2)
 
 - **API REST** — endpoints para iniciar casos, consultar estado, disparar eventos y gestionar tareas humanas. Habilita integraciones externas sin acceso directo al Core.
-- **UI de tareas humanas** — formularios Blazor generados a partir de metadatos del caso. Equivalente al portal de trabajo de PEGA.
+- **UI de tareas humanas** — formularios Blazor generados a partir de metadatos del caso..
 - **Multi-tenancy** — aislamiento de datos por tenant en el store y el repositorio de casos. Prerequisito para oferta SaaS.
 - **Reporting y auditoría** — dashboards de throughput, SLA compliance y cuello de botella por actividad, construidos sobre `CaseHistoryEntry`.
 - **Designer visual** — editor de workflows drag-and-drop que genera definiciones compatibles con `WorkflowBuilder`. La definición compilada e inmutable del Core garantiza que cualquier grafo válido del designer sea ejecutable sin modificaciones.
@@ -703,13 +965,13 @@ Las reglas se versionan: una nueva versión de una regla no afecta a instancias 
 ┌─────────────────────────────────────────────────┐
 │  UI — Blazor Portal / API REST                  │  futuro
 ├─────────────────────────────────────────────────┤
-│  Case Management    │  Rules Engine             │  paso 2 & 5
+│  Case Management  ✅ │  Rules Engine             │  completado & paso 5
 ├─────────────────────────────────────────────────┤
 │  SLA Engine         │  Event Bus               │  paso 3 & 4
 ├─────────────────────────────────────────────────┤
 │  FlowForge.Core  ✅  (motor, builder, DI)       │  hoy
 ├─────────────────────────────────────────────────┤
-│  Persistent Store — EF Core / SQL               │  paso 1
+│  Persistent Store — EF Core  ✅                 │  completado
 └─────────────────────────────────────────────────┘
 ```
 
