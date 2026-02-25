@@ -18,6 +18,7 @@ Motor de ejecución de workflows para .NET 10, diseñado con énfasis en correcc
 - [Integración con Dependency Injection](#integración-con-dependency-injection)
 - [Persistent Store — EF Core](#persistent-store--ef-core)
 - [Case Management](#case-management)
+- [SLA Engine](#sla-engine)
 - [Sandbox — Demo interactivo](#sandbox--demo-interactivo)
 - [Tests](#tests)
 - [Roadmap](#roadmap)
@@ -101,6 +102,31 @@ FlowForge/
 │
 ├── FlowForge.CaseManagement.Tests/             # Tests de integración del Case Management
 │   └── CaseServiceTests.cs
+│
+├── FlowForge.Sla/                              # SLA Engine — monitoreo de plazos y escalación
+│   ├── Models/
+│   │   ├── SlaDefinition.cs                    # Regla de SLA: Goal, Deadline, EscalateTo, OnBreachOutcome
+│   │   ├── SlaOutcomes.cs                      # Constantes SlaBreached / SlaGoalMissed + SlaViolationType enum
+│   │   └── SlaViolation.cs                     # Registro inmutable de una violación detectada
+│   ├── Abstractions/
+│   │   ├── ISlaRepository.cs                   # Contrato de persistencia para definiciones y violaciones
+│   │   └── ISlaMonitor.cs                      # ISlaMonitor + ISlaEventPublisher
+│   ├── Services/
+│   │   ├── SlaDefinitionRegistry.cs            # Registro en memoria de SLAs definidos en código (defaults)
+│   │   ├── SlaMonitor.cs                       # Motor principal: evalúa checkpoints, fuerza outcomes
+│   │   ├── SlaMonitorBackgroundService.cs      # BackgroundService que hace tick al monitor
+│   │   └── NullSlaEventPublisher.cs            # No-op por defecto — reemplaza con tu implementación
+│   └── SlaServiceCollectionExtensions.cs       # AddFlowForgeSla(options, registry)
+│
+├── FlowForge.Sla.EntityFramework/              # Persistencia EF Core para SLA
+│   ├── Entities/
+│   │   └── SlaEntities.cs                      # SlaDefinitionEntity + SlaViolationEntity
+│   ├── FlowForgeSlaDbContext.cs                # DbContext con índices para resolución y dashboards
+│   ├── EfSlaRepository.cs                      # Implementación de ISlaRepository — SQLite-safe
+│   └── FlowForgeSlaEfServiceCollectionExtensions.cs  # AddFlowForgeSlaEfRepository()
+│
+├── FlowForge.Sla.Tests/                        # Tests del SLA Engine
+│   └── SlaTests.cs
 │
 ├── FlowForge.Sandbox/              # Demo interactivo — aprobación de préstamo
 │   ├── Program.cs                  # Flujo completo: ejecutar → suspender → decisión humana → reanudar
@@ -780,6 +806,115 @@ FlowForge_CaseWorkflowExecutions — ejecuciones de workflow por caso
 
 ---
 
+## SLA Engine
+
+El paquete `FlowForge.Sla` monitorea los workflows suspendidos y actúa cuando se superan los plazos configurados. Tiene dos umbrales independientes por actividad: **Goal** (soft — notifica y escala) y **Deadline** (hard — fuerza un outcome en el workflow).
+
+### Prioridad BD sobre código
+
+Los SLAs pueden definirse en dos capas con prioridad clara:
+
+```
+BD (ISlaRepository)      ← mayor prioridad — configurable en runtime sin redesplegar
+    ↓ fallback si null
+Código (SlaDefinitionRegistry)  ← defaults declarados en Program.cs
+```
+
+El monitor resuelve la definición más específica disponible para cada par `(workflowName, activityId)` con esta prioridad adicional dentro de cada capa:
+
+```
+workflowName + activityId  →  coincidencia exacta (mayor prioridad)
+workflowName solo          →  aplica a todas las actividades del workflow
+wildcard (ambos null)      →  aplica a cualquier workflow y actividad
+```
+
+### Configurar SLAs
+
+```csharp
+// En código — defaults
+builder.Services.AddFlowForgeSla(
+    configureOptions: options =>
+    {
+        options.InitialDelay = TimeSpan.FromSeconds(10);
+        options.Interval     = TimeSpan.FromSeconds(60);
+    },
+    configureRegistry: registry =>
+    {
+        // SLA específico: LoanWorkflow + wait-committee
+        registry.Define(new SlaDefinition
+        {
+            WorkflowName    = "LoanWorkflow",
+            ActivityId      = "wait-committee",
+            Goal            = TimeSpan.FromHours(8),    // soft: notifica al supervisor
+            Deadline        = TimeSpan.FromHours(24),   // hard: fuerza SlaBreached
+            OnBreachOutcome = SlaOutcomes.Breached,
+            EscalateTo      = "loan-supervisor-role",
+        });
+
+        // Wildcard: aplica a cualquier workflow sin SLA más específico
+        registry.Define(new SlaDefinition
+        {
+            Deadline = TimeSpan.FromDays(7),
+        });
+    });
+
+// Repositorio EF (BD tiene prioridad sobre el registry en código)
+builder.Services.AddFlowForgeSlaEfRepository(options =>
+    options.UseSqlServer(connectionString));
+```
+
+### Acciones al vencer un plazo
+
+**Goal superado** — sin forzar el workflow:
+- Registra `SlaViolation` con `ViolationType = GoalMissed`
+- Escala al usuario/rol configurado en `EscalateTo`
+- Publica `ISlaEventPublisher.PublishGoalMissedAsync`
+
+**Deadline superado** — intervención sobre el workflow:
+- Registra `SlaViolation` con `ViolationType = DeadlineBreached`
+- Marca el checkpoint con `_slaBreachOutcome` y `_slaBreachAt` en el contexto
+- Publica `ISlaEventPublisher.PublishDeadlineBreachedAsync`
+- El Event Bus (Paso 4) reanuda el workflow con el outcome forzado
+
+> El monitor es **idempotente** — si ya existe una `SlaViolation` del mismo tipo para la instancia, no la duplica.
+
+### Conectar tu sistema de notificaciones
+
+`ISlaEventPublisher` está registrado como `NullSlaEventPublisher` (no-op) por defecto. Reemplázalo con tu implementación:
+
+```csharp
+public sealed class EmailSlaEventPublisher(IEmailService email) : ISlaEventPublisher
+{
+    public async Task PublishGoalMissedAsync(SlaViolation violation, CancellationToken cancellationToken = default)
+    {
+        await email.SendAsync(
+            to:      violation.EscalatedTo!,
+            subject: $"SLA Goal superado — {violation.WorkflowName}",
+            body:    $"El workflow {violation.WorkflowInstanceId} lleva " +
+                     $"{(violation.DetectedAt - violation.SuspendedAt).TotalHours:F0}h suspendido.");
+    }
+
+    public Task PublishDeadlineBreachedAsync(SlaViolation violation, CancellationToken cancellationToken = default)
+    {
+        // Notificar breach crítico — Slack, PagerDuty, etc.
+        return Task.CompletedTask;
+    }
+}
+
+// Registrar antes de AddFlowForgeSla para que TryAdd no lo sobreescriba
+builder.Services.AddSingleton<ISlaEventPublisher, EmailSlaEventPublisher>();
+builder.Services.AddFlowForgeSla(...);
+```
+
+### Tablas en BD
+
+```
+FlowForge_SlaDefinitions   — reglas configurables en runtime (BD override)
+FlowForge_SlaViolations    — registro inmutable de cada violación detectada
+```
+
+---
+
 ## Sandbox — Demo interactivo
 
 `FlowForge.Sandbox` contiene un flujo completo de aprobación de préstamo que demuestra la integración de todos los features en un escenario real con interacción humana en consola.
@@ -848,6 +983,7 @@ El proyecto `FlowForge.Core.Tests` cubre:
 | `ArchitectureTests` | Reglas estructurales con NetArchTest: dependencias entre capas, visibilidad de interfaces públicas, `WorkflowValidator` internal. |
 | `EfWorkflowCheckpointStoreTests` | `SaveAsync` / `LoadAsync` / `DeleteAsync` / `ListAsync`, proyección de columnas `EventName` y `TimeoutAt`, `FindByEventNameAsync`, `FindExpiredAsync` con marcado atómico, registro DI genérico, comportamiento `TryAdd`. Corre sobre SQLite in-memory sin infraestructura. |
 | `CaseServiceTests` | `OpenAsync` con historial, transiciones válidas e inválidas desde terminales, ciclo completo multi-workflow, integración suspend/resume, comentarios, adjuntos, sub-casos, queries del repositorio (`FindByCaseType`, `FindByStatus`, `FindByAssignee`), registro DI. |
+| `SlaTests` | `SlaDefinitionRegistry`: prioridad exacto→workflow→wildcard, reemplazo, definiciones inactivas. `EfSlaRepository`: persist/load con TimeSpan como ticks, `FindDefinitionAsync` por prioridad, idempotencia de `HasViolationAsync`, rango temporal. `SlaMonitor`: sin checkpoints, sin definición, Deadline forzado, Goal sin forzar, idempotencia, fallback al registry de código. |
 
 **Stack de testing:** xUnit · Shouldly · Moq · NetArchTest · coverlet · Microsoft.Data.Sqlite
 
@@ -878,12 +1014,13 @@ El proyecto `FlowForge.Core.Tests` cubre:
 - [x] Persistent Store EF Core — `EfWorkflowCheckpointStore` sobre SQL Server / PostgreSQL / SQLite, serialización JSON en columna, índices O(log n) para `FindByEventNameAsync` y `FindExpiredAsync`, `IWorkflowCheckpointStoreExtended`, migraciones con `dotnet-ef`, `AddFlowForgeSqlServerStore` / `AddFlowForgePostgreSqlStore` / `AddFlowForgeSqliteStore`
 - [x] `WorkflowCheckpointSerializer` — serialización robusta del checkpoint con type tags (`s` / `i` / `d` / `dto` / `j` …), resuelve el diccionario privado de `WorkflowExecutionContext` vía `GetVariables()` / `LoadVariables()` internos, compatible con todos los proveedores EF Core
 - [x] Case Management — `WorkflowCase` con ciclo de vida (`Open→InProgress→Suspended→Closed/Cancelled`), `CaseHistoryEntry` inmutable, `CaseAttachment`, `CaseComment`, `CaseWorkflowExecution`, `ICaseRepository` / `ICaseService` / `CaseService`, persistencia EF Core (`FlowForgeCaseDbContext` + `EfCaseRepository`), `AddFlowForgeCaseManagement()` / `AddFlowForgeCaseEfRepository()`
+- [x] SLA Engine — `SlaDefinition` con Goal (soft) y Deadline (hard), `SlaDefinitionRegistry` en código con prioridad BD→código, `SlaMonitor` idempotente con `BackgroundService` configurable, `ISlaEventPublisher` extensible, `SlaViolation` inmutable, `EfSlaRepository` con `TimeSpan` como ticks, `AddFlowForgeSla()` / `AddFlowForgeSlaEfRepository()`
 
 ---
 
 ### 🔜 Próximos pasos
 
-La siguiente fase evoluciona FlowForge hacia una plataforma de gestión de procesos de negocio (BPM) completa. Las entregas están ordenadas por dependencia: cada paso habilita los siguientes.
+La siguiente fase evoluciona FlowForge hacia una plataforma de gestión de procesos de negocio (BPM) completa, con capacidades equivalentes a sistemas como PEGA. Las entregas están ordenadas por dependencia: cada paso habilita los siguientes.
 
 ---
 
@@ -899,7 +1036,13 @@ Entidad `WorkflowCase` con ciclo de vida propio, historial de auditoría inmutab
 
 ---
 
-#### Paso 3 — SLA Engine · *sobre `WaitForEventActivity`*
+#### ~~Paso 3 — SLA Engine~~ · ✅ *Completado*
+
+`SlaDefinition` con Goal y Deadline, `SlaDefinitionRegistry` con prioridad BD→código, `SlaMonitor` idempotente con `BackgroundService`, `ISlaEventPublisher` extensible (no-op por defecto). Ver sección [SLA Engine](#sla-engine).
+
+---
+
+#### Paso 4 — Event Bus
 
 Expande el soporte de `Timeout` en `WaitForEventActivity` a un motor de SLAs completo con objetivos (goal), deadlines hard y escalación automática. Un `BackgroundService` dedicado — el **SLA Monitor** — evalúa periódicamente los checkpoints activos y fuerza outcomes de escalación cuando se vencen los plazos.
 
@@ -952,7 +1095,7 @@ Las reglas se versionan: una nueva versión de una regla no afecta a instancias 
 ### 🔭 Futuro (post fase 2)
 
 - **API REST** — endpoints para iniciar casos, consultar estado, disparar eventos y gestionar tareas humanas. Habilita integraciones externas sin acceso directo al Core.
-- **UI de tareas humanas** — formularios Blazor generados a partir de metadatos del caso..
+- **UI de tareas humanas** — formularios Blazor generados a partir de metadatos del caso. Equivalente al portal de trabajo de PEGA.
 - **Multi-tenancy** — aislamiento de datos por tenant en el store y el repositorio de casos. Prerequisito para oferta SaaS.
 - **Reporting y auditoría** — dashboards de throughput, SLA compliance y cuello de botella por actividad, construidos sobre `CaseHistoryEntry`.
 - **Designer visual** — editor de workflows drag-and-drop que genera definiciones compatibles con `WorkflowBuilder`. La definición compilada e inmutable del Core garantiza que cualquier grafo válido del designer sea ejecutable sin modificaciones.
@@ -967,7 +1110,7 @@ Las reglas se versionan: una nueva versión de una regla no afecta a instancias 
 ├─────────────────────────────────────────────────┤
 │  Case Management  ✅ │  Rules Engine             │  completado & paso 5
 ├─────────────────────────────────────────────────┤
-│  SLA Engine         │  Event Bus               │  paso 3 & 4
+│  SLA Engine  ✅      │  Event Bus               │  completado & paso 4
 ├─────────────────────────────────────────────────┤
 │  FlowForge.Core  ✅  (motor, builder, DI)       │  hoy
 ├─────────────────────────────────────────────────┤
