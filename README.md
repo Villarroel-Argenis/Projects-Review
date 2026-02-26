@@ -19,6 +19,8 @@ Motor de ejecución de workflows para .NET 10, diseñado con énfasis en correcc
 - [Persistent Store — EF Core](#persistent-store--ef-core)
 - [Case Management](#case-management)
 - [SLA Engine](#sla-engine)
+- [Event Bus](#event-bus)
+- [Rules Engine](#rules-engine)
 - [Sandbox — Demo interactivo](#sandbox--demo-interactivo)
 - [Tests](#tests)
 - [Roadmap](#roadmap)
@@ -127,6 +129,56 @@ FlowForge/
 │
 ├── FlowForge.Sla.Tests/                        # Tests del SLA Engine
 │   └── SlaTests.cs
+│
+├── FlowForge.EventBus/                         # Event Bus — entrega at-least-once in-process
+│   ├── Models/
+│   │   ├── WorkflowEvents.cs                   # WorkflowResumeRequested, SlaViolationOccurred, CaseStatusChanged
+│   │   ├── EventEnvelope.cs                    # Wrapper con metadata de entrega + EnvelopeStatus enum
+│   │   └── RetryPolicy.cs                      # Política de reintentos: Fixed / Linear / Exponential / ExponentialWithJitter
+│   ├── Abstractions/
+│   │   └── IEventBus.cs                        # IEventHandler<T>, IEventBus, IEventStore
+│   ├── Services/
+│   │   ├── HandlerRegistry.cs                  # Registro de handlers por tipo de evento
+│   │   ├── EventSerializer.cs                  # Serialización JSON type-safe sin AssemblyQualifiedName
+│   │   ├── InProcessEventBus.cs                # Motor at-least-once: publish → store → dispatch → retry → dead-letter
+│   │   ├── EventBusBackgroundService.cs        # BackgroundService que hace polling al store
+│   │   ├── WorkflowDefinitionRegistry.cs       # IWorkflowDefinitionRegistry + implementación in-memory
+│   │   └── BuiltInHandlers.cs                  # WorkflowResumeHandler + SlaViolationCaseHistoryHandler
+│   └── EventBusServiceCollectionExtensions.cs  # AddFlowForgeEventBus() / AddEventHandler<T,H>() / AddFlowForgeBuiltInHandlers()
+│
+├── FlowForge.EventBus.EntityFramework/         # Persistencia EF Core para el Event Bus
+│   ├── FlowForgeEventBusDbContext.cs           # DbContext con índices para polling y correlación
+│   ├── EfEventStore.cs                         # IEventStore — lock optimista en FetchPending, SQLite-safe
+│   └── FlowForgeEventBusEfServiceCollectionExtensions.cs  # AddFlowForgeEventBusEfStore()
+│
+├── FlowForge.EventBus.Tests/                   # Tests del Event Bus
+│   └── EventBusTests.cs
+│
+├── FlowForge.Rules/                            # Rules Engine — pre/post condiciones con acciones
+│   ├── Models/
+│   │   ├── RuleDefinition.cs                   # RuleDefinition + RuleTrigger + RuleEvaluationResult
+│   │   ├── RuleCondition.cs                    # VariableCondition, ExpressionCondition, ExternalCondition, Not, And, Or
+│   │   └── RuleAction.cs                       # ForceOutcomeAction, SetVariablesAction, PublishEventAction, BlockExecutionAction
+│   ├── Abstractions/
+│   │   └── IRulesEngine.cs                     # IRulesEngine, IConditionEvaluator<T>, IActionExecutor<T>, IExternalConditionProvider, IRuleRepository
+│   ├── Conditions/
+│   │   ├── ConditionEvaluators.cs              # Variable, Expression, External, Not, And, Or evaluators
+│   │   └── ExpressionEvaluator.cs              # Parser simple de expresiones — AND/OR/operadores
+│   ├── Actions/
+│   │   └── ActionExecutors.cs                  # ForceOutcome, SetVariables, PublishEvent, BlockExecution + RuleBlockedException
+│   ├── Services/
+│   │   ├── ConditionDispatcher.cs              # Dispatch por tipo CLR al evaluador correcto
+│   │   ├── ActionDispatcher.cs                 # Dispatch por tipo CLR al executor correcto
+│   │   ├── RulesEngine.cs                      # Motor principal — evalúa reglas ordenadas por prioridad
+│   │   └── RulesMiddleware.cs                  # IActivityMiddleware — integración en el pipeline de actividades
+│   └── RulesServiceCollectionExtensions.cs     # AddFlowForgeRules() / AddExternalConditionProvider<T>()
+│
+├── FlowForge.Rules.EntityFramework/            # Persistencia EF Core para Rules Engine
+│   ├── RulesEntityFramework.cs                 # Entity + DbContext + EfRuleRepository (JSON polimórfico)
+│   └── FlowForgeRulesEfServiceCollectionExtensions.cs  # AddFlowForgeRulesEfRepository()
+│
+├── FlowForge.Rules.Tests/                      # Tests del Rules Engine
+│   └── RulesEngineTests.cs
 │
 ├── FlowForge.Sandbox/              # Demo interactivo — aprobación de préstamo
 │   ├── Program.cs                  # Flujo completo: ejecutar → suspender → decisión humana → reanudar
@@ -915,53 +967,368 @@ FlowForge_SlaViolations    — registro inmutable de cada violación detectada
 
 ---
 
+## Event Bus
+
+El paquete `FlowForge.EventBus` conecta todos los subsistemas con entrega **at-least-once**: el SLA Engine publica `WorkflowResumeRequested` cuando vence un Deadline y el handler reanuda el workflow automáticamente; `SlaViolationOccurred` escribe la entrada en el historial del caso sin acoplamiento directo entre paquetes.
+
+### Modelo de entrega
+
+```
+PublishAsync()
+    │
+    ▼
+IEventStore.SaveAsync()          ← escribe ANTES de retornar (write-ahead)
+    │
+    ▼ (polling cada N segundos)
+IEventStore.FetchPendingAsync()  ← lock optimista: marca Processing en la misma tx
+    │
+    ▼
+IEventHandler<T>.HandleAsync()   ← scope DI propio por envelope
+    │
+    ├── OK  → Delivered
+    └── EX  → AttemptCount++, AvailableAt = ahora + backoff
+                  └── AgotaReintentos → DeadLetter
+```
+
+Todos los eventos se persisten en BD antes de que `PublishAsync` retorne. Si el proceso cae entre la publicación y la entrega, el `BackgroundService` los recogerá en el siguiente tick.
+
+### Registrar el bus y sus handlers
+
+```csharp
+builder.Services
+    // 1. Store de eventos en BD
+    .AddFlowForgeEventBusEfStore(o => o.UseSqlServer(connectionString))
+
+    // 2. Bus con opciones y handlers
+    .AddFlowForgeEventBus(
+        configureOptions: opts =>
+        {
+            opts.PollingInterval     = TimeSpan.FromSeconds(10);
+            opts.BatchSize           = 50;
+            opts.DefaultRetryPolicy  = new RetryPolicy
+            {
+                MaxAttempts = 5,
+                Strategy    = BackoffStrategy.ExponentialWithJitter,
+                BaseDelay   = TimeSpan.FromSeconds(5),
+                MaxDelay    = TimeSpan.FromMinutes(5),
+            };
+        },
+        configureHandlers: registry =>
+        {
+            // Handlers built-in
+            registry.Register<WorkflowResumeRequested, WorkflowResumeHandler>();
+            registry.Register<SlaViolationOccurred,    SlaViolationCaseHistoryHandler>();
+
+            // Handler custom del caller
+            registry.Register<CaseStatusChanged, MiNotificadorExternoHandler>();
+        })
+
+    // 3. Handlers en DI
+    .AddFlowForgeBuiltInHandlers()
+    .AddScoped<MiNotificadorExternoHandler>();
+```
+
+### Eventos built-in
+
+| Evento | Publicado por | Manejado por | Acción |
+|---|---|---|---|
+| `WorkflowResumeRequested` | SLA Engine (Deadline breach) | `WorkflowResumeHandler` | Llama a `engine.ResumeAsync` con el outcome especificado |
+| `SlaViolationOccurred` | `ISlaEventPublisher` adaptador | `SlaViolationCaseHistoryHandler` | Añade comentario de sistema al caso asociado |
+| `CaseStatusChanged` | `CaseService.TransitionAsync` | Handler del caller | Notificación externa, auditoría, integración |
+
+### Eventos custom
+
+```csharp
+// 1. Definir el evento
+public sealed record PedidoAprobado(string PedidoId, decimal Monto) : WorkflowEvent
+{
+    public override string EventType => nameof(PedidoAprobado);
+}
+
+// 2. Registrar el tipo para serialización
+EventSerializer.Register<PedidoAprobado>();
+
+// 3. Publicar
+await eventBus.PublishAsync(new PedidoAprobado(pedidoId, monto));
+
+// 4. Handler
+public sealed class EnviarFacturaHandler(IFacturaService facturas)
+    : IEventHandler<PedidoAprobado>
+{
+    public async Task HandleAsync(PedidoAprobado @event, CancellationToken cancellationToken = default)
+        => await facturas.GenerarAsync(@event.PedidoId, @event.Monto, cancellationToken);
+}
+```
+
+### `IWorkflowDefinitionRegistry` — necesario para reanudar workflows
+
+`WorkflowResumeHandler` necesita la `WorkflowDefinition` para llamar a `engine.ResumeAsync`. Regístrala al arrancar:
+
+```csharp
+builder.Services.AddSingleton<IWorkflowDefinitionRegistry>(sp =>
+{
+    var registry = new WorkflowDefinitionRegistry();
+    registry.Register(loanWorkflow);   // WorkflowDefinition compilada con Build()
+    return registry;
+});
+```
+
+### Dead Letter — inspección y reencola
+
+```csharp
+var store = scope.ServiceProvider.GetRequiredService<IEventStore>();
+
+// Inspeccionar
+var deadLetters = await store.GetDeadLetterAsync();
+foreach (var dl in deadLetters)
+    Console.WriteLine($"{dl.EventType} | {dl.LastError} | Intentos: {dl.AttemptCount}");
+
+// Reencolar para reintento
+await store.RequeueDeadLetterAsync(dl.EnvelopeId);
+```
+
+### Tabla en BD
+
+```
+FlowForge_EventEnvelopes   — envelopes con payload JSON, estado, intentos y backoff
+```
+
+---
+
+## Rules Engine
+
+El paquete `FlowForge.Rules` evalúa reglas de negocio antes y después de cada actividad, sin modificar el código del workflow. Las reglas se persisten en BD y pueden cambiarse en runtime sin redesplegar.
+
+### Tipos de condición
+
+| Tipo | Ejemplo |
+|---|---|
+| `VariableCondition` | `monto > 10000` sobre variables del contexto |
+| `ExpressionCondition` | `monto > 10000 && tipoCliente == "Premium"` |
+| `ExternalCondition` | Llamada a `IScoreService` por `ProviderName` |
+| `AndCondition` | Todas deben ser verdaderas |
+| `OrCondition` | Al menos una debe ser verdadera |
+| `NotCondition` | Negación de cualquier condición |
+
+### Tipos de acción
+
+| Tipo | Efecto | Trigger |
+|---|---|---|
+| `ForceOutcomeAction` | Reemplaza el outcome de la actividad | PostActivity |
+| `SetVariablesAction` | Escribe variables en el contexto | Pre y Post |
+| `PublishEventAction` | Publica un evento al Event Bus | Pre y Post |
+| `BlockExecutionAction` | Lanza `RuleBlockedException` — bloquea la actividad | PreActivity |
+
+### Definir y persistir una regla
+
+```csharp
+var rule = new RuleDefinition
+{
+    Name         = "Riesgo alto — forzar revisión manual",
+    WorkflowName = "LoanWorkflow",
+    ActivityId   = "credit-check",
+    Trigger      = RuleTrigger.PostActivity,
+    Priority     = 10,
+    Condition    = new AndCondition([
+        new VariableCondition("monto",    ">",   "50000", "decimal"),
+        new VariableCondition("puntaje",  "<",   "650",   "decimal"),
+    ]),
+    Actions = [
+        new ForceOutcomeAction("ManualReview"),
+        new SetVariablesAction(new Dictionary<string, string>
+        {
+            ["motivoRevision"] = "Alto monto con bajo puntaje crediticio",
+        }),
+    ],
+};
+
+await ruleRepository.SaveAsync(rule);
+```
+
+### Expresiones compuestas
+
+```csharp
+// AND / OR / NOT anidados
+var condition = new AndCondition([
+    new VariableCondition("monto", ">", "5000", "decimal"),
+    new OrCondition([
+        new VariableCondition("tipoCliente", "==", "Premium"),
+        new NotCondition(new VariableCondition("enListaNegra", "==", "true")),
+    ]),
+]);
+```
+
+### Condición externa — servicio de negocio
+
+```csharp
+// 1. Implementar el proveedor
+public sealed class CreditScoreProvider(ICreditService creditService)
+    : IExternalConditionProvider
+{
+    public string ProviderName => "CreditScore";
+
+    public async Task<bool> EvaluateAsync(
+        string? parametersJson,
+        WorkflowExecutionContext context,
+        CancellationToken cancellationToken = default)
+    {
+        var solicitanteId = context.GetVariable<string>("solicitanteId");
+        var score         = await creditService.GetScoreAsync(solicitanteId!, cancellationToken);
+        return score >= 700;
+    }
+}
+
+// 2. Registrar
+builder.Services.AddExternalConditionProvider<CreditScoreProvider>();
+
+// 3. Usar en la regla
+var condition = new ExternalCondition("CreditScore");
+```
+
+### Integrar en el pipeline
+
+```csharp
+builder.Services
+    .AddFlowForgeRulesEfRepository(o => o.UseSqlServer(connectionString))
+    .AddFlowForgeRules()
+    .AddFlowForgeMiddleware<RulesMiddleware>();
+```
+
+El middleware evalúa `PreActivity` antes de ejecutar la actividad y `PostActivity` después. Si una pre-condición lanza `RuleBlockedException`, la actividad retorna `ActivityExecutionResult.Failure` — el engine lo trata como `TerminationReason.ActivityFailed`.
+
+### Tabla en BD
+
+```
+FlowForge_Rules   — definiciones con condición y acciones serializadas como JSON polimórfico
+```
+
+---
+
 ## Sandbox — Demo interactivo
 
-`FlowForge.Sandbox` contiene un flujo completo de aprobación de préstamo que demuestra la integración de todos los features en un escenario real con interacción humana en consola.
+`FlowForge.Sandbox` es una PoC de consola interactiva que integra los cinco subsistemas de FlowForge en un escenario real de **soporte al cliente**. Demuestra la interacción entre Case Management, Rules Engine, SLA Engine y Event Bus sobre un workflow de resolución de tickets con intervención humana.
 
-**Flujo del demo:**
-
-```
-Recibir solicitud → Analizar riesgo → [SUSPENDER] → Aprobar préstamo
-                                      IWaitActivity  ↘
-                                                      Rechazar préstamo
-```
-
-**Ejecución:**
+### Estructura del proyecto Sandbox
 
 ```
-══════════════════════════════════════════════
-  FlowForge — Aprobación de préstamo
-══════════════════════════════════════════════
-
-▶ Iniciando workflow...
-
-  👤 Solicitante : Carlos Mendoza
-  💰 Monto       : $250,000.00
-  🆔 ID          : SOL-20260220143022
-  📊 Score crediticio: 741
-  📋 Resultado: Riesgo BAJO — apto para comité
-  📧 Expediente enviado al comité de crédito.
-  ⏸️  Workflow suspendido — pendiente de decisión humana.
-
-══════════════════════════════════════════════
-  👔 Decisión del comité [aprobar / rechazar]: aprobar
-══════════════════════════════════════════════
-
-▶ Reanudando con decisión: Approved
-
-  🎉 Préstamo APROBADO
-  📄 Número de crédito: CRED-482910
-  👤 Titular: Carlos Mendoza | Monto: $250,000.00
-
-══════════════════════════════════════════════
-  Estado final  : ✅ Completado
-  Actividades   : 5
-  Duración total: 12ms
-══════════════════════════════════════════════
+FlowForge.Sandbox/
+├── Program.cs                        # Host, DI completo, inicialización de BD
+├── Models/
+│   └── SupportTicket.cs             # Payload de negocio del caso (GetData<T>/SetData<T>)
+├── Workflows/
+│   └── SupportTicketWorkflow.cs     # Actividades + WorkflowDefinition compilada
+├── Events/
+│   └── TicketEvents.cs              # TicketEscalatedEvent — evento custom del dominio
+├── Handlers/
+│   └── TicketHandlers.cs            # TicketEscalationNotificationHandler (Event Bus)
+├── Demo/
+│   ├── DemoRunner.cs                # Menú interactivo + orquestación del ciclo completo
+│   └── UI.cs                        # Helpers de presentación en consola
+└── Usings/
+    └── GlobalUsings.cs              # Global usings de todos los paquetes FlowForge
 ```
 
-El demo acepta `aprobar` / `a` / `si` para aprobar y cualquier otra entrada para rechazar. El checkpoint se persiste en `InMemoryWorkflowCheckpointStore` entre la suspensión y la reanudación, simulando el ciclo completo execute → save → load → resume.
+### Flujo del workflow
+
+```
+RecibidoTicket → Clasificar ──────────────────────────── AssignarAgente → [WAIT]
+                     ↑                                                       │
+                 Rules Engine                                    ┌───────────┼────────────┐
+                 (PostActivity)                                  ↓           ↓            ↓
+              Premium+Normal→High                           Resolved    Escalate    SlaBreached
+              Premium+Critical→Senior                           │           │            │
+              Desc<10chars→Block                                ↓           ↓            ↓
+                                                           Resolver    EscalarL2   EscalarL2
+                                                                └───────────┴────────────┘
+                                                                            ↓
+                                                                       CerrarTicket
+```
+
+### Features demostrados
+
+**Rules Engine** — tres reglas sembradas automáticamente en BD al arrancar:
+
+| Prioridad | Trigger | Condición | Acción |
+|---|---|---|---|
+| 1 | PreActivity | `description.length < 10` | `BlockExecutionAction` — rechaza el ticket |
+| 5 | PostActivity | `Premium AND Critical` | `SetVariablesAction` — asigna Equipo Senior |
+| 10 | PostActivity | `Premium AND Normal` | `ForceOutcomeAction` + `SetVariablesAction` — sube a High |
+
+**Case Management** — cada ticket abre un `WorkflowCase` con historial de auditoría inmutable. El menú `[4]` muestra la traza completa: creación, suspensión, reanudación y cierre.
+
+**SLA Engine** — plazos acelerados para el demo (20 s goal / 45 s deadline). El `SlaMonitorBackgroundService` evalúa los checkpoints cada 10 s en background. Si el ticket no se resuelve antes del deadline, fuerza automáticamente el outcome `SlaBreached`.
+
+**Event Bus** — cuando una actividad escala el ticket, publica `TicketEscalatedEvent` al bus. El `TicketEscalationNotificationHandler` lo recibe con garantía at-least-once y simula el envío de una notificación a Ingeniería L2. El `WorkflowResumeHandler` built-in consume `WorkflowResumeRequested` para reanudar el workflow tras un breach de SLA sin intervención manual.
+
+### Persistencia
+
+Cada subsistema usa su propio archivo SQLite — `EnsureCreatedAsync` funciona correctamente porque no comparten archivo:
+
+| Archivo | Subsistema |
+|---|---|
+| `ff-checkpoints.db` | FlowForge Core (checkpoints) |
+| `ff-cases.db` | Case Management |
+| `ff-sla.db` | SLA Engine |
+| `ff-eventbus.db` | Event Bus |
+| `ff-rules.db` | Rules Engine |
+
+### Menú interactivo
+
+```
+  ════════════════════════════════════════════════════════════
+    FlowForge PoC — Menú Principal
+  ════════════════════════════════════════════════════════════
+
+    [1] Crear nuevo ticket
+    [2] Ver tickets pendientes
+    [3] Resolver / Escalar ticket
+    [4] Ver historial de un caso
+    [5] Ver reglas activas
+    [0] Salir
+```
+
+### Ejemplo de sesión
+
+```
+  > 1
+
+  ┌─ Nuevo Ticket de Soporte ──────────────────────────────
+  │  Nombre del cliente: Ana García
+  │  Tier del cliente [Premium/Standard]: premium
+  │  Descripción del problema: Sistema caído en producción
+
+  ┌─ Ticket recibido ──────────────────────────────────────
+  │  ID                 TKT-20260226143501-742
+  │  Cliente            Ana García (Premium)
+  │  Descripción        Sistema caído en producción
+
+  ┌─ Clasificación automática ─────────────────────────────
+  │  Prioridad base     🔴 Critical
+  │  (el Rules Engine puede ajustar según tier del cliente)
+
+  ┌─ Asignación ───────────────────────────────────────────
+  │  Agente             Equipo Senior Premium
+  │  ⚡ Prioridad upgr.  por regla 'PremiumCriticalRule'
+  │  SLA deadline       45s (demo acelerado)
+
+  ┌─ ⏸  Workflow suspendido ──────────────────────────────
+  │  Ticket TKT-20260226143501-742 en cola. Opciones al reanudar:
+  │    [Resolved]    → el agente resolvió el problema
+  │    [Escalate]    → escalar a nivel 2 manualmente
+  │    [SlaBreached] → el SLA Engine forzará esto si vence el plazo
+
+  ✅  Ticket TKT-20260226143501-742 creado y en espera de resolución.
+
+  -- 45 segundos después, sin intervención manual --
+
+  📣  [EVENT BUS] TicketEscalatedEvent recibido
+       Ticket   : TKT-20260226143501-742
+       Cliente  : Ana García  |  Prioridad: Critical
+       Motivo   : SlaBreached
+       → Notificación enviada a Ingeniería L2 y supervisor.
+```
+
+El SLA Monitor y el Event Bus corren en background — sus efectos (notificaciones, reanudaciones automáticas) aparecen en consola mientras el usuario navega el menú.
 
 ---
 
@@ -984,6 +1351,7 @@ El proyecto `FlowForge.Core.Tests` cubre:
 | `EfWorkflowCheckpointStoreTests` | `SaveAsync` / `LoadAsync` / `DeleteAsync` / `ListAsync`, proyección de columnas `EventName` y `TimeoutAt`, `FindByEventNameAsync`, `FindExpiredAsync` con marcado atómico, registro DI genérico, comportamiento `TryAdd`. Corre sobre SQLite in-memory sin infraestructura. |
 | `CaseServiceTests` | `OpenAsync` con historial, transiciones válidas e inválidas desde terminales, ciclo completo multi-workflow, integración suspend/resume, comentarios, adjuntos, sub-casos, queries del repositorio (`FindByCaseType`, `FindByStatus`, `FindByAssignee`), registro DI. |
 | `SlaTests` | `SlaDefinitionRegistry`: prioridad exacto→workflow→wildcard, reemplazo, definiciones inactivas. `EfSlaRepository`: persist/load con TimeSpan como ticks, `FindDefinitionAsync` por prioridad, idempotencia de `HasViolationAsync`, rango temporal. `SlaMonitor`: sin checkpoints, sin definición, Deadline forzado, Goal sin forzar, idempotencia, fallback al registry de código. |
+| `EventBusTests` | `RetryPolicy`: Fixed, Exponential crecimiento doble, MaxDelay respetado, jitter. `HandlerRegistry`: registro, deduplicación, evento sin handlers. `EventSerializer`: roundtrip de los tres eventos built-in, tipo desconocido. `EfEventStore`: persist, FetchPending con AvailableAt y BatchSize, lock optimista Processing, UpdateAsync, GetDeadLetter, RequeueDeadLetter. `InProcessEventBus`: publicar → Pending, handler exitoso → Delivered, handler falla → reintento con backoff, agota intentos → DeadLetter, sin handlers → Delivered vacío, DI. |
 
 **Stack de testing:** xUnit · Shouldly · Moq · NetArchTest · coverlet · Microsoft.Data.Sqlite
 
@@ -1014,7 +1382,8 @@ El proyecto `FlowForge.Core.Tests` cubre:
 - [x] Persistent Store EF Core — `EfWorkflowCheckpointStore` sobre SQL Server / PostgreSQL / SQLite, serialización JSON en columna, índices O(log n) para `FindByEventNameAsync` y `FindExpiredAsync`, `IWorkflowCheckpointStoreExtended`, migraciones con `dotnet-ef`, `AddFlowForgeSqlServerStore` / `AddFlowForgePostgreSqlStore` / `AddFlowForgeSqliteStore`
 - [x] `WorkflowCheckpointSerializer` — serialización robusta del checkpoint con type tags (`s` / `i` / `d` / `dto` / `j` …), resuelve el diccionario privado de `WorkflowExecutionContext` vía `GetVariables()` / `LoadVariables()` internos, compatible con todos los proveedores EF Core
 - [x] Case Management — `WorkflowCase` con ciclo de vida (`Open→InProgress→Suspended→Closed/Cancelled`), `CaseHistoryEntry` inmutable, `CaseAttachment`, `CaseComment`, `CaseWorkflowExecution`, `ICaseRepository` / `ICaseService` / `CaseService`, persistencia EF Core (`FlowForgeCaseDbContext` + `EfCaseRepository`), `AddFlowForgeCaseManagement()` / `AddFlowForgeCaseEfRepository()`
-- [x] SLA Engine — `SlaDefinition` con Goal (soft) y Deadline (hard), `SlaDefinitionRegistry` en código con prioridad BD→código, `SlaMonitor` idempotente con `BackgroundService` configurable, `ISlaEventPublisher` extensible, `SlaViolation` inmutable, `EfSlaRepository` con `TimeSpan` como ticks, `AddFlowForgeSla()` / `AddFlowForgeSlaEfRepository()`
+- [x] Event Bus — `WorkflowResumeRequested` / `SlaViolationOccurred` / `CaseStatusChanged` / custom, entrega at-least-once con retry exponencial y dead-letter, `IEventStore` persistente, `BackgroundService` con polling, `WorkflowResumeHandler` cierra el bucle SLA→Engine, `SlaViolationCaseHistoryHandler` cierra SLA→Case, `IWorkflowDefinitionRegistry`, `EventSerializer` type-safe, `AddFlowForgeEventBus()` / `AddFlowForgeEventBusEfStore()`
+- [x] Rules Engine — `RuleDefinition` con prioridad BD→código, `VariableCondition` / `ExpressionCondition` / `ExternalCondition` / `AndCondition` / `OrCondition` / `NotCondition`, `ForceOutcomeAction` / `SetVariablesAction` / `PublishEventAction` / `BlockExecutionAction`, `RulesMiddleware` integrado en el pipeline, `IExternalConditionProvider`, `AddFlowForgeRules()` / `AddFlowForgeRulesEfRepository()`
 
 ---
 
@@ -1075,20 +1444,9 @@ FlowForge.Messaging.Kafka/
 
 ---
 
-#### Paso 5 — Rules Engine · *sobre `IActivity`*
+#### ~~Paso 5 — Rules Engine~~ · ✅ *Completado*
 
-Permite definir reglas de negocio como tablas de decisión serializables (JSON / base de datos), evaluables en runtime sin recompilación. Cada regla se envuelve en una `RuleActivity` estándar — el motor no distingue entre una actividad codificada y una basada en reglas.
-
-```
-FlowForge.Rules/
-├── IBusinessRule.cs
-├── DecisionTableRule.cs          # filas condición → outcome, cargadas desde BD
-├── RuleActivity.cs               # IActivity que delega en IBusinessRule
-├── IRuleRepository.cs            # carga y versiona reglas desde BD
-└── RulesServiceCollectionExtensions.cs
-```
-
-Las reglas se versionan: una nueva versión de una regla no afecta a instancias en vuelo que ya cargaron la versión anterior.
+Reglas de negocio evaluadas en el pipeline de actividades. Condiciones compuestas (AND/OR/NOT), variables del contexto, expresiones, servicios externos y regex. Cuatro tipos de acción: forzar outcome, set variables, publicar evento y bloquear ejecución. Ver sección [Rules Engine](#rules-engine).
 
 ---
 
@@ -1108,11 +1466,11 @@ Las reglas se versionan: una nueva versión de una regla no afecta a instancias 
 ┌─────────────────────────────────────────────────┐
 │  UI — Blazor Portal / API REST                  │  futuro
 ├─────────────────────────────────────────────────┤
-│  Case Management  ✅ │  Rules Engine             │  completado & paso 5
+│  Case Management  ✅ │  Rules Engine  ✅        │  completados
 ├─────────────────────────────────────────────────┤
-│  SLA Engine  ✅      │  Event Bus               │  completado & paso 4
+│  SLA Engine  ✅      │  Event Bus  ✅            │  completados
 ├─────────────────────────────────────────────────┤
-│  FlowForge.Core  ✅  (motor, builder, DI)       │  hoy
+│  FlowForge.Core  ✅  (motor, builder, DI)       │  completado
 ├─────────────────────────────────────────────────┤
 │  Persistent Store — EF Core  ✅                 │  completado
 └─────────────────────────────────────────────────┘
