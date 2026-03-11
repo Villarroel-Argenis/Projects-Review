@@ -1389,7 +1389,7 @@ El proyecto `FlowForge.Core.Tests` cubre:
 
 ### 🔜 Próximos pasos
 
-La siguiente fase evoluciona FlowForge hacia una plataforma de gestión de procesos de negocio (BPM) completa, con capacidades equivalentes a sistemas como PEGA. Las entregas están ordenadas por dependencia: cada paso habilita los siguientes.
+La siguiente fase evoluciona FlowForge hacia una plataforma de gestión de procesos de negocio (BPM) completa. Las entregas están ordenadas por dependencia: cada paso habilita los siguientes.
 
 ---
 
@@ -1453,7 +1453,7 @@ Reglas de negocio evaluadas en el pipeline de actividades. Condiciones compuesta
 ### 🔭 Futuro (post fase 2)
 
 - **API REST** — endpoints para iniciar casos, consultar estado, disparar eventos y gestionar tareas humanas. Habilita integraciones externas sin acceso directo al Core.
-- **UI de tareas humanas** — formularios Blazor generados a partir de metadatos del caso. Equivalente al portal de trabajo de PEGA.
+- **UI de tareas humanas** — formularios Blazor generados a partir de metadatos del caso.
 - **Multi-tenancy** — aislamiento de datos por tenant en el store y el repositorio de casos. Prerequisito para oferta SaaS.
 - **Reporting y auditoría** — dashboards de throughput, SLA compliance y cuello de botella por actividad, construidos sobre `CaseHistoryEntry`.
 - **Designer visual** — editor de workflows drag-and-drop que genera definiciones compatibles con `WorkflowBuilder`. La definición compilada e inmutable del Core garantiza que cualquier grafo válido del designer sea ejecutable sin modificaciones.
