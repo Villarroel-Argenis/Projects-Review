@@ -1,204 +1,184 @@
-# ESG POC — Casos de Prueba por Categoría
+# ESG POC — Casos de Prueba Multi-Categoría
 
-## Instrucciones
+## Leyenda
 
-1. Ingresar cada descripción en el clasificador
-2. Anotar si respondió **FuzzySharp** o **Groq**
-3. Verificar que el código regulatorio sea el esperado
-4. Si Groq aprendió keywords nuevas, marcar con ✅ en la columna Aprendizaje
-
----
-
-## 0 — No Aplica
-
-| # | Descripción | Código esperado | Motor | Resultado | Aprendizaje |
-|---|---|---|---|---|---|
-| 1 | Préstamo para capital de trabajo de empresa de alimentos | 0 | — | | |
-| 2 | Crédito para nómina de personal administrativo | 0 | — | | |
-| 3 | Financiamiento para compra de mobiliario de oficina | 0 | — | | |
-| 4 | Préstamo para pintar las instalaciones de color verde | 0 | — | | |
-| 5 | Crédito para publicidad y marketing digital | 0 | — | | |
-| 6 | Financiamiento para reciclaje de datos del sistema | 0 | — | | |
+| Icono | Significado |
+|---|---|
+| ✅ POSITIVO | Impacto ambiental positivo — elegible como crédito verde |
+| ❌ NEGATIVO | Impacto ambiental negativo — no elegible |
+| ⚪ NEUTRO | Sin impacto ambiental — no aplica |
+| ⛔ NO APLICA | Código 0 — excluido por reglas |
+| 🔀 MÚLTIPLE | Aplica a más de una categoría ESG |
+| 🧠 APRENDE | FuzzySharp fallará — Groq aprende keywords nuevas |
 
 ---
 
-## 100 — Gestión Integral de Residuos y Captura de Emisiones
+## 1. Casos Positivos — Una sola categoría
 
-| # | Descripción | Código esperado | Motor | Resultado | Aprendizaje |
-|---|---|---|---|---|---|
-| 1 | Crédito para biodigestor de tratamiento de lodos de fosa séptica | 101 | | | |
-| 2 | Financiamiento para camión recolector de basura clasificada | 102 | | | |
-| 3 | Préstamo para planta de biodigestión de desperdicios de comida | 103 | | | |
-| 4 | Crédito para compostadora industrial de fracción orgánica | 104 | | | |
-| 5 | Financiamiento para valorización de botellas plásticas y latas | 105 | | | |
-| 6 | Préstamo para aprovechamiento de gas metano en vertedero | 106 | | | |
-| 7 | Crédito para planta de valorización energética de desechos | 107 | | | |
-| 8 | Financiamiento para sistema MRV de medición de emisiones co2 | 108 | | | |
-| 9 | Préstamo para ductos de traslado de gases de efecto invernadero | 109 | | | |
-| 10 | Crédito para almacenamiento geológico de co2 capturado | 110 | | | |
-| 11 | Financiamiento para consultoría de mercado de carbono | 111 | | | |
-
----
-
-## 200 — Energía
-
-| # | Descripción | Código esperado | Motor | Resultado | Aprendizaje |
-|---|---|---|---|---|---|
-| 1 | Crédito para sistema de generación distribuida fotovoltaica en techo | 201 | | | |
-| 2 | Financiamiento para concentradores solares térmicos industriales | 202 | | | |
-| 3 | Préstamo para aerogeneradores de eje horizontal en zona costera | 203 | | | |
-| 4 | Crédito para turbinas marinas de aprovechamiento de corrientes | 204 | | | |
-| 5 | Financiamiento para central hidroeléctrica de pequeña escala | 205 | | | |
-| 6 | Préstamo para aprovechamiento de vapor geotérmico subterráneo | 206 | | | |
-| 7 | Crédito para biodigestores de producción de biogás a partir de biomasa | 207 | | | |
-| 8 | Financiamiento para cableado de distribución de energía renovable | 208 | | | |
-| 9 | Préstamo para baterías de litio para almacenamiento solar | 209 | | | |
-| 10 | Crédito para tanques de acumulación de energía térmica | 210 | | | |
-| 11 | Financiamiento para almacenamiento de hidrógeno verde en cilindros | 211 | | | |
-| 12 | Préstamo para producción de bioetanol a partir de aceite reciclado | 212 | | | |
-| 13 | Crédito para red de enfriamiento central de distrito urbano | 213 | | | |
-| 14 | Financiamiento para tuberías de distribución de biometano | 214 | | | |
-| 15 | Préstamo para instalación de bombas de calor tipo inverter | 215 | | | |
-| 16 | Crédito para sistema termosolar de doble aprovechamiento calor y frío | 216 | | | |
-| 17 | Financiamiento para cogeneración geotérmica de calor y electricidad | 217 | | | |
-| 18 | Préstamo para cogeneración de biomasa para calor y energía | 218 | | | |
-| 19 | Crédito para recuperadores de calor residual de motores industriales | 219 | | | |
-| 20 | Financiamiento para electrolizador de producción de hidrógeno verde | 220 | | | |
-| 21 | Préstamo para auditoría eléctrica y consultoría de eficiencia energética | 221 | | | |
+| # | Estado | Descripción | Código esperado | Categoría |
+|---|---|---|---|---|
+| 1 | ✅ POSITIVO | Financiamiento para instalación de paneles solares en planta industrial | 201 | Energía Solar |
+| 2 | ✅ POSITIVO | Crédito para compra de aerogeneradores de eje horizontal en zona costera | 203 | Energía Eólica |
+| 3 | ✅ POSITIVO | Préstamo para adquisición de baterías de litio para almacenamiento solar | 209 | Almacenamiento Energía |
+| 4 | ✅ POSITIVO | Financiamiento para flota de autobuses eléctricos de transporte masivo | 401 | Transporte Público |
+| 5 | ✅ POSITIVO | Crédito para compra de vehículo eléctrico de batería para uso particular | 405 | Transporte Particular |
+| 6 | ✅ POSITIVO | Préstamo para planta de tratamiento de aguas residuales con biodigestor | 503 | Tratamiento Agua |
+| 7 | ✅ POSITIVO | Financiamiento para compostadora industrial de fracción orgánica | 104 | Compostaje |
+| 8 | ✅ POSITIVO | Crédito para reforestación y conservación de cuencas hidrográficas | 901 | Gestión Desastres |
+| 9 | ✅ POSITIVO | Préstamo para conservación de arrecifes de coral y manglares | 1001 | Activos Naturales |
+| 10 | ✅ POSITIVO | Financiamiento para producción de bioplásticos y polímeros reciclados | 607 | Industria Verde |
 
 ---
 
-## 300 — Construcción
+## 2. Casos Positivos — Aprendizaje requerido
 
-| # | Descripción | Código esperado | Motor | Resultado | Aprendizaje |
-|---|---|---|---|---|---|
-| 1 | Crédito para construcción de edificio con certificación LEED platinum | 301 | | | |
-| 2 | Financiamiento para retrofit energético con aislamiento térmico de fachada | 302 | | | |
-| 3 | Préstamo para asesoría técnica para certificación EDGE de edificio | 303 | | | |
-| 4 | Crédito para compra de local comercial con certificación energética | 304 | | | |
-
----
-
-## 400 — Transporte
-
-| # | Descripción | Código esperado | Motor | Resultado | Aprendizaje |
-|---|---|---|---|---|---|
-| 1 | Financiamiento para flota de autobuses eléctricos de transporte masivo | 401 | | | |
-| 2 | Crédito para adquisición de scooters eléctricos para reparto urbano | 402 | | | |
-| 3 | Préstamo para instalación de electrolineras en estacionamiento | 403 | | | |
-| 4 | Financiamiento para camión eléctrico de carga interurbana | 404 | | | |
-| 5 | Crédito para vehículo eléctrico de batería para uso particular | 405 | | | |
-| 6 | Préstamo para gestión de flota vehicular sostenible y logística verde | 406 | | | |
+| # | Estado | Descripción | Código esperado | Vocabulario nuevo |
+|---|---|---|---|---|
+| 1 | 🧠 APRENDE | Crédito para sistema de generación distribuida fotovoltaica en techo | 201 | generación distribuida fotovoltaica |
+| 2 | 🧠 APRENDE | Financiamiento para electromovilidad corporativa de última milla | 405 | electromovilidad, última milla |
+| 3 | 🧠 APRENDE | Préstamo para retrofit energético con mejora de envolvente térmica | 302 | retrofit, envolvente térmica |
+| 4 | 🧠 APRENDE | Crédito para implementación de sistema MRV de medición de emisiones | 108 | sistema MRV |
+| 5 | 🧠 APRENDE | Financiamiento para electrolizador de producción de H2 verde | 220 | electrolizador, H2 verde |
+| 6 | 🧠 APRENDE | Préstamo para planta de valorización material de RSU | 105 | valorización material, RSU |
+| 7 | 🧠 APRENDE | Crédito para membranas de ósmosis inversa en planta potabilizadora | 503 | ósmosis inversa, potabilizadora |
+| 8 | 🧠 APRENDE | Financiamiento para certificación EDGE de edificio comercial | 303 | certificación EDGE |
+| 9 | 🧠 APRENDE | Préstamo para cogeneración de calor residual en proceso industrial | 219 | cogeneración calor residual |
+| 10 | 🧠 APRENDE | Crédito para infraestructura de bajo consumo para data center verde | 701 | data center verde |
 
 ---
 
-## 500 — Suministro y Tratamiento de Agua
+## 3. Casos Múltiples — Dos categorías
 
-| # | Descripción | Código esperado | Motor | Resultado | Aprendizaje |
-|---|---|---|---|---|---|
-| 1 | Financiamiento para red de distribución de agua potable con bombeo solar | 501 | | | |
-| 2 | Crédito para sistema de alcantarillado sanitario y aguas negras | 502 | | | |
-| 3 | Préstamo para planta de tratamiento con membranas de ósmosis inversa | 503 | | | |
-| 4 | Financiamiento para válvulas controladoras de caudal y riego sostenible | 504 | | | |
-| 5 | Crédito para consultoría de diseño sanitario y gestión hídrica | 505 | | | |
-
----
-
-## 600 — Industria
-
-| # | Descripción | Código esperado | Motor | Resultado | Aprendizaje |
-|---|---|---|---|---|---|
-| 1 | Préstamo para manufactura de equipos de tecnología limpia | 601 | | | |
-| 2 | Financiamiento para producción de cemento con cogeneración eficiente | 602 | | | |
-| 3 | Crédito para fundición de aluminio reciclado | 603 | | | |
-| 4 | Préstamo para producción de acero a partir de materiales reciclados | 604 | | | |
-| 5 | Financiamiento para fabricación de cloro sin mercurio | 605 | | | |
-| 6 | Crédito para producción de detergentes biodegradables y jabón natural | 606 | | | |
-| 7 | Préstamo para producción de bioplásticos y polímeros reciclados | 607 | | | |
-| 8 | Financiamiento para asesoría técnica ambiental en planta industrial | 608 | | | |
-| 9 | Crédito para instalación de válvulas antifugas en red de suministro | 609 | | | |
+| # | Estado | Descripción | Códigos esperados | Categorías |
+|---|---|---|---|---|
+| 1 | 🔀 MÚLTIPLE ✅ | Financiamiento para edificio con paneles solares y certificación LEED | 201 + 301 | Energía Solar + Construcción Verde |
+| 2 | 🔀 MÚLTIPLE ✅ | Crédito para vehículo eléctrico e instalación de cargador domiciliario | 405 + 403 | Transporte Particular + Infraestructura |
+| 3 | 🔀 MÚLTIPLE ✅ | Préstamo para sistema de riego sostenible con bombeo solar | 201 + 504 | Energía Solar + Eficiencia Agua |
+| 4 | 🔀 MÚLTIPLE ✅ | Financiamiento para biodigestor que genera biogás y trata aguas residuales | 207 + 503 | Bioenergía + Tratamiento Agua |
+| 5 | 🔀 MÚLTIPLE ✅ | Crédito para planta de compostaje con captura de gases de efecto invernadero | 104 + 108 | Compostaje + Captura GEI |
+| 6 | 🔀 MÚLTIPLE ✅ | Préstamo para techos verdes y sistema de captación de agua pluvial | 803 + 504 | Drenaje Urbano + Eficiencia Agua |
+| 7 | 🔀 MÚLTIPLE ✅ | Financiamiento para flota de bicicletas eléctricas y estaciones de carga | 402 + 403 | Micromovilidad + Infraestructura |
+| 8 | 🔀 MÚLTIPLE ✅ | Crédito para producción de biogás a partir de residuos orgánicos | 103 + 207 | Digestión Orgánicos + Bioenergía |
 
 ---
 
-## 700 — Tecnologías de la Información
+## 4. Casos Múltiples — Tres o más categorías
 
-| # | Descripción | Código esperado | Motor | Resultado | Aprendizaje |
-|---|---|---|---|---|---|
-| 1 | Préstamo para infraestructura digital de bajo consumo energético | 701 | | | |
-| 2 | Financiamiento para software de modelado climático y alerta temprana | 702 | | | |
-| 3 | Crédito para asesoría en tecnologías de monitoreo climático | 703 | | | |
-| 4 | Préstamo para sensores inteligentes de detección de fugas de agua | 704 | | | |
-
----
-
-## 800 — Suministro de Agua, Alcantarillado y Remediación
-
-| # | Descripción | Código esperado | Motor | Resultado | Aprendizaje |
-|---|---|---|---|---|---|
-| 1 | Financiamiento para sistema de captación y tratamiento de agua potable | 801 | | | |
-| 2 | Crédito para planta de saneamiento de aguas negras urbanas | 802 | | | |
-| 3 | Préstamo para pavimentos permeables y techos verdes de drenaje urbano | 803 | | | |
+| # | Estado | Descripción | Códigos esperados | Categorías |
+|---|---|---|---|---|
+| 1 | 🔀 MÚLTIPLE ✅ | Financiamiento para edificio con paneles solares, reutilización de agua y certificación LEED | 201 + 301 + 504 | Energía Solar + Construcción + Agua |
+| 2 | 🔀 MÚLTIPLE ✅ | Crédito para planta industrial eficiente con cogeneración, tratamiento de efluentes y paneles solares | 201 + 219 + 503 | Solar + Calor Residual + Agua |
+| 3 | 🔀 MÚLTIPLE ✅ | Préstamo para parque eólico con baterías de almacenamiento y red de distribución verde | 203 + 209 + 208 | Eólica + Almacenamiento + Transmisión |
+| 4 | 🔀 MÚLTIPLE ✅ | Financiamiento para hub de movilidad eléctrica con electrolineras, bicicletas y autobuses eléctricos | 401 + 402 + 403 | Transporte Público + Micro + Infraestructura |
+| 5 | 🔀 MÚLTIPLE ✅ | Crédito para proyecto de economía circular con reciclaje, compostaje y biogás | 105 + 104 + 207 | Reciclaje + Compostaje + Bioenergía |
 
 ---
 
-## 900 — Gestión de Desastres
+## 5. Casos Negativos — Impacto ambiental negativo
 
-| # | Descripción | Código esperado | Motor | Resultado | Aprendizaje |
-|---|---|---|---|---|---|
-| 1 | Financiamiento para reforestación y conservación de cuencas hidrográficas | 901 | | | |
-
----
-
-## 1000 — Activos Naturales y Protección Ambiental
-
-| # | Descripción | Código esperado | Motor | Resultado | Aprendizaje |
-|---|---|---|---|---|---|
-| 1 | Crédito para conservación de arrecifes de coral y manglares | 1001 | | | |
+| # | Estado | Descripción | Impacto esperado |
+|---|---|---|---|
+| 1 | ❌ NEGATIVO | Financiamiento para perforación de pozos petroleros en zona costera | Negativo — fósil |
+| 2 | ❌ NEGATIVO | Crédito para ampliación de planta de carbón para generación eléctrica | Negativo — fósil |
+| 3 | ❌ NEGATIVO | Préstamo para compra de flota de camiones diésel de carga pesada | Negativo — transporte contaminante |
+| 4 | ❌ NEGATIVO | Financiamiento para gasoducto de gas natural no renovable | Negativo — fósil |
+| 5 | ❌ NEGATIVO | Crédito para refinería de petróleo en zona industrial | Negativo — fósil |
 
 ---
 
-## Resumen de resultados
+## 6. Casos Neutros — Sin impacto ambiental
 
-| Categoría | Total casos | FuzzySharp | Groq | Correctos | Keywords aprendidas |
-|---|---|---|---|---|---|
-| 0 — No Aplica | 6 | | | | |
-| 100 — Residuos | 11 | | | | |
-| 200 — Energía | 21 | | | | |
-| 300 — Construcción | 4 | | | | |
-| 400 — Transporte | 6 | | | | |
-| 500 — Agua | 5 | | | | |
-| 600 — Industria | 9 | | | | |
-| 700 — Tecnología | 4 | | | | |
-| 800 — Saneamiento | 3 | | | | |
-| 900 — Desastres | 1 | | | | |
-| 1000 — Naturaleza | 1 | | | | |
-| **Total** | **71** | | | | |
+| # | Estado | Descripción | Código esperado |
+|---|---|---|---|
+| 1 | ⚪ NEUTRO | Financiamiento para equipos de cómputo para oficinas administrativas | 0 |
+| 2 | ⚪ NEUTRO | Crédito para remodelación de sucursales bancarias sin criterios de eficiencia | 0 |
+| 3 | ⚪ NEUTRO | Préstamo para adquisición de maquinaria industrial de producción general | 0 |
+| 4 | ⚪ NEUTRO | Financiamiento para infraestructura de telecomunicaciones convencional | 0 |
+| 5 | ⚪ NEUTRO | Crédito para compra de terreno sin proyecto ambiental definido | 0 |
 
 ---
 
-## Consulta de auditoría post-pruebas
+## 7. Casos No Aplica — Excluidos por reglas
+
+| # | Estado | Descripción | Regla de exclusión |
+|---|---|---|---|
+| 1 | ⛔ NO APLICA | Préstamo para capital de trabajo de empresa de alimentos | Keyword: capital de trabajo |
+| 2 | ⛔ NO APLICA | Crédito para nómina de personal de empresa solar | Keyword: nómina |
+| 3 | ⛔ NO APLICA | Financiamiento para pintar las oficinas de color verde | Keyword: pintar |
+| 4 | ⛔ NO APLICA | Préstamo para reciclaje de datos y gestión de información digital | Keyword: reciclaje de datos |
+| 5 | ⛔ NO APLICA | Crédito para publicidad de productos ecológicos | Sin actividad ambiental concreta |
+| 6 | ⛔ NO APLICA | Financiamiento para mobiliario de oficina ecológica | Sin actividad ambiental concreta |
+
+---
+
+## 8. Casos Trampa — Deben clasificarse como No Aplica
+
+| # | Estado | Descripción | Por qué es trampa |
+|---|---|---|---|
+| 1 | ⛔ NO APLICA | Crédito para empresa Verde S.A. para capital de trabajo | El nombre "Verde" no es criterio ESG |
+| 2 | ⛔ NO APLICA | Préstamo para jardín decorativo con plantas en fachada | No es infraestructura ambiental |
+| 3 | ⛔ NO APLICA | Financiamiento para estudio de factibilidad solar sin ejecución | Sin actividad concreta financiada |
+| 4 | ⛔ NO APLICA | Crédito para vehículo eléctrico de gerente para uso personal mixto | El uso personal mixto no califica |
+| 5 | ⛔ NO APLICA | Préstamo para empresa de reciclaje para pagar deudas | La actividad financiada no es ambiental |
+
+---
+
+## 9. Casos Ambiguos — Requieren revisión manual
+
+| # | Estado | Descripción | Ambigüedad |
+|---|---|---|---|
+| 1 | ⚠️ AMBIGUO | Financiamiento para biodigestor de aguas residuales industriales | 101 vs 103 vs 503 |
+| 2 | ⚠️ AMBIGUO | Crédito para construcción de bodega industrial sostenible | 301 vs 0 — depende de certificación |
+| 3 | ⚠️ AMBIGUO | Préstamo para planta de tratamiento de residuos orgánicos e industriales | 103 vs 503 |
+| 4 | ⚠️ AMBIGUO | Financiamiento para proyecto de energía con componente de consultoría | 201 vs 221 |
+| 5 | ⚠️ AMBIGUO | Crédito para empresa de transporte que compra un vehículo eléctrico y diésel | 405 vs 0 |
+
+---
+
+## Resumen de casos
+
+| Tipo | Total | FuzzySharp | Groq | Códigos |
+|---|---|---|---|---|
+| ✅ Positivos una categoría | 10 | | | Varios |
+| 🧠 Positivos aprendizaje | 10 | | | Varios |
+| 🔀 Múltiples dos categorías | 8 | | | Múltiples |
+| 🔀 Múltiples tres+ categorías | 5 | | | Múltiples |
+| ❌ Negativos | 5 | | | 0 |
+| ⚪ Neutros | 5 | | | 0 |
+| ⛔ No aplica | 6 | | | 0 |
+| ⛔ Trampa | 5 | | | 0 |
+| ⚠️ Ambiguos | 5 | | | 0 |
+| **Total** | **59** | | | |
+
+---
+
+## Consultas de verificación post-pruebas
 
 ```sql
--- Keywords aprendidas por categoría
+-- Ver todo lo aprendido ordenado por fecha
 SELECT
     s.code,
     s.label,
     l.keyword,
     l.source_text,
-    l.llm_confidence,
+    ROUND(l.llm_confidence * 100) AS confidence_pct,
     l.created_at
 FROM esg_keyword_learning_log l
 JOIN esg_taxonomy_subcategory s ON s.code = l.subcategory_code
-ORDER BY s.code, l.created_at;
+ORDER BY l.created_at DESC;
 
--- Resumen por subcategoría
+-- Casos multi-categoría — verificar keywords aprendidas por código
 SELECT
     s.code,
     s.label,
-    COUNT(l.id) AS keywords_aprendidas
+    array_length(s.keywords, 1) AS total_keywords,
+    s.updated_at
 FROM esg_taxonomy_subcategory s
-LEFT JOIN esg_keyword_learning_log l ON l.subcategory_code = s.code
-GROUP BY s.code, s.label
-HAVING COUNT(l.id) > 0
-ORDER BY s.code;
+ORDER BY s.updated_at DESC
+LIMIT 20;
+
+-- Revertir keyword incorrecta si es necesario
+-- UPDATE esg_taxonomy_subcategory
+-- SET keywords = array_remove(keywords, 'keyword incorrecta')
+-- WHERE code = 201;
 ```
