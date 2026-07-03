@@ -41,7 +41,8 @@ ERP web. Blazor Web App (InteractiveServer) + .NET 10 REST API. Solo desarrollad
 ### Sistema de Tabs MDI
 - `TabsState` (Scoped): `OpenTab(MenuItem)`, `CloseTabAsync`, `SetDirty`, `SetActive`
 - `TabContainer.razor` (en `ERP.Host.Server`): usa `MudDynamicTabs` con `KeepPanelsAlive=true`
-- `DynamicComponent` recibe parámetros vía `MenuItem.Parametros` (`Dictionary<string,object>?`, **nullable sin default** — el `Concat` en `TabContainer` debe usar `tab.Parametros ?? []`, si no, cualquier `MenuItem` sin `Parametros` explícito rompe el tab al abrirlo)
+- `DynamicComponent` recibe parámetros vía `new Dictionary<string, object> { { "TabId", tab.Id } }.Concat(tab.Parametros ?? []).ToDictionary()` — `TabId` se inyecta manualmente en el contenedor, no depende de que el emisor del tab lo incluya en `Parametros`. **Verificado contra archivo real.**
+- `MenuItem.Parametros` es `Dictionary<string,object>?` nullable sin default — el `Concat` en `TabContainer` usa `tab.Parametros ?? []`, si no, cualquier `MenuItem` sin `Parametros` explícito rompe el tab al abrirlo
 - Menú llama `TabsState.OpenTab(item)` en vez de navegar
 - `ITabService` (namespace real: `ERP.Core.Contracts.Shared.Services`; `MenuItem` en `ERP.Core.Contracts.Shared.Navigation`) expone:
   ```csharp
@@ -69,28 +70,30 @@ ERP web. Blazor Web App (InteractiveServer) + .NET 10 REST API. Solo desarrollad
 
 ### ERP.Module.Admin
 **API**: `EmpresaEndpoints`, `UsuarioEndpoints`, `RolEndpoints` (con `GET/PUT /api/admin/roles/{id}/permisos`), `PermisoEndpoints` (`GET /api/admin/permisos`).
-**UI**: `EmpresaList`, `UsuarioList`, `RolList`, `ModuloList`, `RolPermisoList` (checkboxes agrupados por `ModuleId`/`Pantalla`).
+**UI**: `EmpresaList`, `UsuarioList`, `RolList`, `ModuloList`, `RolPermisoList` (checkboxes agrupados por `ModuleId`/`Pantalla`, dirty tracking + Snackbar + try/catch — **COMPLETO, ver sección abajo**).
 
-`AdminApiService` — **verificado contra el archivo real**, todos los métodos existen con estos nombres exactos: `GetPermisosAsync`, `GetPermisosRolAsync`, `ActualizarPermisosRolAsync`, además de `GetPermisosUsuarioAsync`/`ActualizarPermisosUsuarioAsync`, `GetRolesUsuarioAsync`/`ActualizarRolesUsuarioAsync`, `GetEmpresasUsuarioAsync`/`ActualizarEmpresasUsuarioAsync`.
+`AdminApiService` — verificado contra archivo real: `GetPermisosAsync`, `GetPermisosRolAsync`, `ActualizarPermisosRolAsync`, además de `GetPermisosUsuarioAsync`/`ActualizarPermisosUsuarioAsync`, `GetRolesUsuarioAsync`/`ActualizarRolesUsuarioAsync`, `GetEmpresasUsuarioAsync`/`ActualizarEmpresasUsuarioAsync`.
+
+`PermisoDto` (record, orden confirmado): `(int IdPermiso, string ModuleId, string Pantalla, string Accion, string Descripcion)`. `PermisoEndpoints` construye con ese mismo orden posicional — sin mapeo cruzado.
+
+`RolAdminDto` (record, confirmado): `(int IdRol, string Nombre, string Descripcion)`. `IdRol` es `int`, coincide con `[Parameter] public int RolId` en `RolPermisoList` — sin riesgo de mismatch de tipo en el binding de `DynamicComponent`.
 
 ## Branch Activa
 `feature/blazor-server-migration` — mergeada a `develop` (verificado con git log en sesión previa).
 
-## RolPermisoList — Estado Real (esta sesión)
+## RolPermisoList — CERRADO, verificado en runtime (esta sesión)
 
-**Confirmado, no asumido:**
-- `PermisoEndpoints.MapPermisoEndpoints()` **sí está registrado** en `AdminModule.MapEndpoints()` — verificado contra el archivo real.
-- Nombres de métodos en `AdminApiService` **coinciden** con lo asumido — verificado contra el archivo real.
-- Dirty tracking reescrito: compara el set de permisos actual contra el estado original (`_permisosOriginales`), no marca dirty por cualquier toggle si el resultado neto es igual al estado guardado. `SetDirty(TabId, false)` solo se llama si `Guardar()` recibe `true` del backend — antes limpiaba el dirty flag sin verificar si el guardado tuvo éxito.
+**Compilación:** build exitoso (0 failed).
 
-**Gaps reales confirmados (no "por verificar" — ya se vio que faltan):**
-- No hay `ISnackbar` inyectado en `RolPermisoList`. Si `ActualizarPermisosRolAsync` devuelve `false`, el usuario no ve ningún mensaje de error.
-- `OnInitializedAsync` no tiene `try/catch`. Si `GetPermisosAsync` o `GetPermisosRolAsync` fallan (401/500/timeout), no hay manejo — la página puede quedar en blanco o el circuito SignalR puede romperse sin mensaje.
+**Verificado en runtime, no solo en código:**
+- `RolId` llega correcto al abrir el tab desde `RolList` (clave `"RolId"` en `Parametros`, tipo `int` coincide con `RolAdminDto.IdRol`).
+- `TabId` llega correcto — inyectado por `TabContainer`, independiente de `RolList`.
+- Dirty tracking: al tocar un checkbox, el tab muestra el indicador (●). Compara contra `_permisosOriginales`, no marca dirty por cualquier toggle si el resultado neto coincide con el estado guardado.
+- Persistencia real confirmada: guardado → cierre de tab → cambio de otro dato (nombre del rol) → reapertura del tab de permisos → el estado guardado se mantuvo. No fue solo verificación de estado local.
+- **Camino de error en carga** (`OnInitializedAsync`): probado apagando la API. Se ve `MudAlert` en el `.razor` (bloque `else if (_errorCarga)`) y Snackbar rojo. No hay pantalla en blanco ni ruptura de circuito SignalR.
+- **Camino de error en guardado** (`Guardar()`): probado forzando fallo con checkbox ya tocado. Snackbar rojo aparece, el punto de dirty (●) permanece visible (correcto — el cambio no persistió), el botón vuelve a estado "GUARDAR" sin quedar atascado en "Guardando...".
 
-**Sin verificar todavía (riesgo real, no cosmético):**
-- `PermisoDto` — no se ha visto el record. `PermisoEndpoints` lo construye con constructor posicional `(IdPermiso, ModuleId, Pantalla, Accion, Descripcion)`; si el orden real no coincide, compila pero mapea campos mal (ej. `Descripcion` termina en `Accion`) sin ningún error visible.
-- Cómo `RolList` arma `MenuItem.Parametros` al abrir el tab de `RolPermisoList` — si la clave no es exactamente `"RolId"` o el tipo no es `int`, el parámetro llega en 0 silenciosamente y se cargan/guardan permisos del rol equivocado.
-- No compilado ni probado en runtime todavía.
+**Código final (`.razor.cs`):** inyecta `AdminApiService`, `ITabService`, `ISnackbar`. `OnInitializedAsync` y `Guardar()` con try/catch + finally. `_errorCarga` gobierna el render del `.razor` junto a `_loading`.
 
 ## Deuda Técnica Registrada
 1. Refresh Token
@@ -108,7 +111,7 @@ ERP web. Blazor Web App (InteractiveServer) + .NET 10 REST API. Solo desarrollad
 13. Soft delete en `CuentaContable`
 14. Mapper por Source Generation
 15. Gestión completa usuarios (empresas + roles en mismo formulario)
-16. Asignación de permisos a roles — código escrito y con dirty tracking corregido, pendiente compilar/probar, faltan Snackbar y try/catch (ver sección RolPermisoList arriba)
+16. ~~Asignación de permisos a roles~~ — **CERRADO esta sesión.** Ver sección RolPermisoList arriba.
 17. Asignación de roles a usuarios por empresa
 18. Asignación de empresas a usuarios
 19. Empresa por defecto por usuario
