@@ -2,7 +2,7 @@
 > Una propuesta conceptual de gestión documental impulsada por IA para PYMEs y equipos en crecimiento.
 
 > [!NOTE]
-> Este documento describe una **propuesta de tesis**: un modelo conceptual de lo que se puede construir con IA aplicada a la gestión documental. No es un producto implementado ni un repositorio en desarrollo. El aporte es el **modelo de arquitectura** —cómo separar las responsabilidades del sistema— no un software terminado.
+> Este documento describe una de un modelo conceptual de lo que se puede construir con IA aplicada a la gestión documental. No es un producto implementado ni un repositorio en desarrollo. El aporte es el **modelo de arquitectura** —cómo separar las responsabilidades del sistema— no un software terminado.
 
 ---
 
